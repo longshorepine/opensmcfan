@@ -93,6 +93,6 @@ Before committing changes, verify:
 
 ## Project Phase
 
-Current: **Phase 7 complete** (WiFi-style menu bar, profile persistence via ProfileStore, New/Duplicate/Save/Delete in Preferences)
-Next: **Phase 8** — Launch at Login + auto-apply last profile on startup
+Current: **Phase 8 in progress** (auto-apply last profile on startup via UserDefaults; Launch at Login deferred — needs privileged helper)
+Next: finish Phase 8 (Launch at Login), then **Phase 9** — Distribution
 See `vision.md` for full 9-phase roadmap.

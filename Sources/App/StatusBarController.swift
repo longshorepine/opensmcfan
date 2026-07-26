@@ -57,10 +57,15 @@ final class StatusBarController: NSObject, PreferencesDelegate {
         profileStore.createDefaultsIfNeeded(fanCount: _fanCount, minRPM: _minRPM, maxRPM: _maxRPM)
         reloadProfiles()
 
-        // Start with Auto profile
-        workingProfile = profileForId("auto")
-        for i in 0..<_fanCount {
-            fanModes[i] = .auto
+        // Restore last active profile (or default to auto)
+        let lastId = UserDefaults.standard.string(forKey: "MySMC.lastProfileId") ?? "auto"
+        currentProfileId = lastId
+        workingProfile = profileForId(lastId)
+        for config in workingProfile.fans {
+            fanModes[config.fanIndex] = config.mode
+            if let rpm = config.fixedRPM { fanTargetRPMs[config.fanIndex] = rpm }
+            fanCurves[config.fanIndex] = config.curve
+            fanSensors[config.fanIndex] = config.referenceSensor
         }
 
         // Configure status bar button
@@ -260,6 +265,7 @@ final class StatusBarController: NSObject, PreferencesDelegate {
 
     private func applyProfile(id: String) {
         currentProfileId = id
+        UserDefaults.standard.set(id, forKey: "MySMC.lastProfileId")
         workingProfile = profileForId(id)
 
         // Sync local fan state from profile
