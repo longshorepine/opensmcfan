@@ -96,6 +96,29 @@ public final class ThermalEngine {
         engineQueue.sync { activeProfile }
     }
 
+    /// Lightweight profile update — changes the active profile config
+    /// without resetting engine state (ramp targets, spike timers).
+    /// Use this for slider drags and single-fan overrides.
+    public func updateActiveProfile(_ profile: Profile) {
+        engineQueue.async { [weak self] in
+            self?.activeProfile = profile
+        }
+    }
+
+    /// Update a single fan's config within the active profile.
+    /// Lighter than updateActiveProfile for single-fan changes.
+    public func updateFanConfig(fanIndex: Int, config: FanConfig) {
+        engineQueue.async { [weak self] in
+            guard let self = self else { return }
+            if let i = self.activeProfile?.fans.firstIndex(where: { $0.fanIndex == fanIndex }) {
+                self.activeProfile?.fans[i] = config
+                // Clear ramp state for this fan so new setting applies immediately
+                self.lastTargets.removeValue(forKey: fanIndex)
+                self.spikeTimers.removeValue(forKey: fanIndex)
+            }
+        }
+    }
+
     // MARK: - Tick
 
     private func tick() {
