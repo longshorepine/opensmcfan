@@ -2,6 +2,20 @@
 #define SMC_TYPES_H
 
 #include <stdint.h>
+#include <Security/Authorization.h>
+
+// C wrapper so Swift can call the deprecated AuthorizationExecuteWithPrivileges
+// (Swift 5.3 marks it unavailable; calling through C bypasses that restriction).
+static inline OSStatus mysmc_executeWithPrivileges(
+    AuthorizationRef auth,
+    const char *path,
+    char * const *args
+) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return AuthorizationExecuteWithPrivileges(auth, path, 0, args, NULL);
+#pragma clang diagnostic pop
+}
 
 // ── SMC struct definitions matching the AppleSMC kernel driver ABI ──
 
