@@ -92,6 +92,6 @@ Before committing changes, verify:
 
 ## Project Phase
 
-Current: **Phase 4 complete** (SMCKit + Core + CLI + Menu Bar App)
-Next: **Phase 5** — Fan Control UI (sliders, mode toggles, profile switching in GUI)
+Current: **Phase 5 complete** (SMCKit + Core + CLI + Menu Bar App + Fan Control UI)
+Next: **Phase 6** — Fan Curve Editor (visual temp→RPM graph with draggable control points)
 See `vision.md` for full 9-phase roadmap.
