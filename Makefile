@@ -63,5 +63,7 @@ install-app: app
 run: cli
 	sudo $(CLI_BIN) status
 
+# 'sudo open' does NOT give the launched app root — launchd re-spawns as the user.
+# Run the binary directly so the process inherits the sudo privilege.
 run-app: app
-	sudo open $(BUILD_DIR)/MySMC.app
+	sudo $(APP_BIN)

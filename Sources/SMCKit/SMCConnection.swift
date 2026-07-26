@@ -129,6 +129,10 @@ public final class SMCConnection {
         } catch {
             throw SMCError.keyInfoFailed(key, kIOReturnError)
         }
+        // Check the SMC's own result byte (separate from the IOKit transport result)
+        guard output.result == 0 else {
+            throw SMCError.keyInfoFailed(key, Int32(output.result))
+        }
 
         let typeStr = SMCConnection.uint32ToTypeString(output.keyInfo.dataType)
         return SMCKeyInfo(dataSize: output.keyInfo.dataSize, dataType: typeStr)
@@ -150,6 +154,9 @@ public final class SMCConnection {
             output = try callSMC(&input)
         } catch {
             throw SMCError.readFailed(key, kIOReturnError)
+        }
+        guard output.result == 0 else {
+            throw SMCError.readFailed(key, Int32(output.result))
         }
 
         // Extract bytes from the fixed-size C array
@@ -174,9 +181,13 @@ public final class SMCConnection {
 
     /// Write raw bytes to an SMC key.
     public func writeRaw(key: String, bytes: [UInt8]) throws {
+        // Read key info first to get the correct data size expected by the SMC.
+        // Using bytes.count alone risks a size mismatch that causes silent write failures.
+        let info = try keyInfo(for: key)
+
         var input = SMCKeyData_t()
         input.key = SMCConnection.keyToUInt32(key)
-        input.keyInfo.dataSize = UInt32(bytes.count)
+        input.keyInfo.dataSize = info.dataSize
         input.data8 = UInt8(SMC_CMD_WRITE_BYTES)
 
         // Copy bytes into the fixed-size C array
@@ -188,10 +199,16 @@ public final class SMCConnection {
             }
         }
 
+        let output: SMCKeyData_t
         do {
-            _ = try callSMC(&input)
+            output = try callSMC(&input)
         } catch {
             throw SMCError.writeFailed(key, kIOReturnError)
+        }
+        // Check the SMC's own result byte — a successful IOKit call does NOT
+        // mean the SMC accepted the command (e.g. out-of-range value, key not writable)
+        guard output.result == 0 else {
+            throw SMCError.writeFailed(key, Int32(output.result))
         }
     }
 

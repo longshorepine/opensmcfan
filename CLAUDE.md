@@ -27,6 +27,10 @@ sudo .build/mysmc auto
 sudo .build/mysmc monitor -i 1
 sudo .build/mysmc profile balanced
 sudo .build/mysmc curve 0 TC0D 40:1200 55:2000 70:4000 85:6200
+
+# GUI app — must run the binary directly; 'sudo open' spawns via launchd as user (no root)
+sudo .build/MySMC.app/Contents/MacOS/MySMC
+# or: make run-app
 ```
 
 ## Architecture
