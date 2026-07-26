@@ -9,8 +9,14 @@ protocol PreferencesDelegate: AnyObject {
     func preferencesDidChangeFanCurve(fanIndex: Int, curve: FanCurve)
     func preferencesDidChangeFanReferenceSensor(fanIndex: Int, sensorKey: String?)
     func preferencesDidSelectProfile(id: String)
+    func preferencesDidSaveProfile()
+    func preferencesDidCreateProfile(name: String)
+    func preferencesDidDuplicateProfile()
+    func preferencesDidDeleteProfile(id: String)
+    func currentProfile() -> Profile
     func availableProfiles() -> [(id: String, name: String)]
     func activeProfileId() -> String
+    func isProfileBuiltIn(id: String) -> Bool
     func fanMode(for index: Int) -> FanMode
     func fanTargetRPM(for index: Int) -> Double?
     func fanCurve(for index: Int) -> FanCurve?
@@ -59,6 +65,8 @@ final class PreferencesWindowController: NSWindowController {
     private var responseDelayLabel: NSTextField?
     private var curveParamsStack: NSStackView?
     private var selectedFanForCurve: Int = 0
+    private var saveButton: NSButton?
+    private var deleteButton: NSButton?
 
     // MARK: - Init
 
@@ -112,21 +120,7 @@ final class PreferencesWindowController: NSWindowController {
 
     /// Refresh all profile-related controls after an external profile switch.
     func refreshControls() {
-        guard let delegate = prefsDelegate else { return }
-
-        // Update profile dropdown
-        if let popup = profilePopup {
-            let activeId = delegate.activeProfileId()
-            let profiles = delegate.availableProfiles()
-            for (i, profile) in profiles.enumerated() {
-                if profile.id == activeId {
-                    popup.selectItem(at: i)
-                    break
-                }
-            }
-        }
-
-        // Rebuild fan config section
+        refreshProfilePopup()
         rebuildFanConfigs()
     }
 
@@ -240,17 +234,6 @@ final class PreferencesWindowController: NSWindowController {
         popup.font = .systemFont(ofSize: 12)
         popup.target = self
         popup.action = #selector(profileChanged(_:))
-
-        if let delegate = prefsDelegate {
-            let profiles = delegate.availableProfiles()
-            let activeId = delegate.activeProfileId()
-            for (i, profile) in profiles.enumerated() {
-                popup.addItem(withTitle: profile.name)
-                if profile.id == activeId {
-                    popup.selectItem(at: i)
-                }
-            }
-        }
         profilePopup = popup
 
         profileRow.addArrangedSubview(profileLabel)
@@ -258,12 +241,69 @@ final class PreferencesWindowController: NSWindowController {
         profileLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         profilesStack.addArrangedSubview(profileRow)
+
+        // Profile management buttons
+        let buttonRow = NSStackView()
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 8
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let newBtn = NSButton(title: "New\u{2026}", target: self, action: #selector(newProfile))
+        newBtn.bezelStyle = .rounded
+        newBtn.controlSize = .small
+        newBtn.font = .systemFont(ofSize: 11)
+
+        let dupBtn = NSButton(title: "Duplicate", target: self, action: #selector(duplicateProfile))
+        dupBtn.bezelStyle = .rounded
+        dupBtn.controlSize = .small
+        dupBtn.font = .systemFont(ofSize: 11)
+
+        let saveBtn = NSButton(title: "Save", target: self, action: #selector(saveProfile))
+        saveBtn.bezelStyle = .rounded
+        saveBtn.controlSize = .small
+        saveBtn.font = .systemFont(ofSize: 11)
+        saveButton = saveBtn
+
+        let delBtn = NSButton(title: "Delete", target: self, action: #selector(deleteProfile))
+        delBtn.bezelStyle = .rounded
+        delBtn.controlSize = .small
+        delBtn.font = .systemFont(ofSize: 11)
+        deleteButton = delBtn
+
+        buttonRow.addArrangedSubview(newBtn)
+        buttonRow.addArrangedSubview(dupBtn)
+        buttonRow.addArrangedSubview(saveBtn)
+        buttonRow.addArrangedSubview(delBtn)
+
+        profilesStack.addArrangedSubview(buttonRow)
         profilesStack.addArrangedSubview(makeDivider())
+
+        // Populate the popup and update button states
+        refreshProfilePopup()
 
         // Fan config sections will be built dynamically
         rebuildFanConfigs()
 
         return container
+    }
+
+    private func refreshProfilePopup() {
+        guard let popup = profilePopup, let delegate = prefsDelegate else { return }
+
+        popup.removeAllItems()
+        let profiles = delegate.availableProfiles()
+        let activeId = delegate.activeProfileId()
+        for (i, profile) in profiles.enumerated() {
+            popup.addItem(withTitle: profile.name)
+            if profile.id == activeId {
+                popup.selectItem(at: i)
+            }
+        }
+
+        // Enable/disable delete based on whether profile is built-in
+        let isBuiltIn = delegate.isProfileBuiltIn(id: activeId)
+        deleteButton?.isEnabled = !isBuiltIn
     }
 
     // MARK: - Rebuild Monitor Tab
@@ -636,6 +676,65 @@ final class PreferencesWindowController: NSWindowController {
         let idx = sender.indexOfSelectedItem
         guard idx >= 0 && idx < profiles.count else { return }
         delegate.preferencesDidSelectProfile(id: profiles[idx].id)
+        refreshProfilePopup()
+        rebuildFanConfigs()
+    }
+
+    @objc private func newProfile() {
+        let alert = NSAlert()
+        alert.messageText = "New Profile"
+        alert.informativeText = "Enter a name for the new profile:"
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.stringValue = "My Profile"
+        alert.accessoryView = input
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            let name = input.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { return }
+            prefsDelegate?.preferencesDidCreateProfile(name: name)
+            refreshProfilePopup()
+            rebuildFanConfigs()
+        }
+    }
+
+    @objc private func duplicateProfile() {
+        prefsDelegate?.preferencesDidDuplicateProfile()
+        refreshProfilePopup()
+        rebuildFanConfigs()
+    }
+
+    @objc private func saveProfile() {
+        prefsDelegate?.preferencesDidSaveProfile()
+
+        // Brief visual feedback
+        saveButton?.title = "Saved"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.saveButton?.title = "Save"
+        }
+    }
+
+    @objc private func deleteProfile() {
+        guard let delegate = prefsDelegate else { return }
+        let activeId = delegate.activeProfileId()
+        guard !delegate.isProfileBuiltIn(id: activeId) else { return }
+
+        let profile = delegate.currentProfile()
+        let alert = NSAlert()
+        alert.messageText = "Delete Profile"
+        alert.informativeText = "Are you sure you want to delete \"\(profile.name)\"?"
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            delegate.preferencesDidDeleteProfile(id: activeId)
+            refreshProfilePopup()
+            rebuildFanConfigs()
+        }
     }
 
     @objc private func fanModeChanged(_ sender: NSPopUpButton) {

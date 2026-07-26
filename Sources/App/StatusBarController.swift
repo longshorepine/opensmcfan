@@ -2,21 +2,23 @@ import AppKit
 
 // MARK: - Status Bar Controller
 
-/// Manages the menu bar icon, popover dashboard, preferences window,
+/// Manages the menu bar icon, dropdown menu (WiFi-style), preferences window,
 /// fan control, and profile switching.
-final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegate {
+final class StatusBarController: NSObject, PreferencesDelegate {
     private let statusItem: NSStatusItem
-    private let popover: NSPopover
     private let smc: SMCConnection
     private let engine: ThermalEngine
     private let fanReader: FanReader
     private let tempMonitor: TemperatureMonitor
-    private let dashboardVC: DashboardViewController
     private let prefsController: PreferencesWindowController
-    private var eventMonitor: Any?
+    private let profileStore: ProfileStore
+
+    // Cached sensor data for menu display
+    private var lastTemps: [TemperatureReading] = []
+    private var lastFans: [Fan] = []
 
     // Profile state
-    private var profiles: [(id: String, name: String)] = []
+    private var profiles: [Profile] = []
     private var currentProfileId: String = "auto"
     private var workingProfile: Profile!
 
@@ -34,17 +36,13 @@ final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegat
         self.engine = ThermalEngine(smc: smc)
         self.fanReader = FanReader(smc: smc)
         self.tempMonitor = TemperatureMonitor(smc: smc)
-        self.dashboardVC = DashboardViewController()
         self.prefsController = PreferencesWindowController()
+        self.profileStore = ProfileStore()
 
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        self.popover = NSPopover()
-        self.popover.contentViewController = dashboardVC
-        self.popover.behavior = .transient
 
         super.init()
 
-        dashboardVC.delegate = self
         prefsController.prefsDelegate = self
 
         // Read hardware info
@@ -55,17 +53,12 @@ final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegat
             _maxRPM = first.maximum ?? 6200
         }
 
-        // Build profile list
-        profiles = [
-            (id: "auto",     name: "Auto"),
-            (id: "quiet",    name: "Quiet"),
-            (id: "balanced", name: "Balanced"),
-            (id: "cool",     name: "Cool"),
-            (id: "max",      name: "Max"),
-        ]
+        // Initialize profile store and load profiles
+        profileStore.createDefaultsIfNeeded(fanCount: _fanCount, minRPM: _minRPM, maxRPM: _maxRPM)
+        reloadProfiles()
 
         // Start with Auto profile
-        workingProfile = makeProfile(id: "auto")
+        workingProfile = profileForId("auto")
         for i in 0..<_fanCount {
             fanModes[i] = .auto
         }
@@ -76,16 +69,6 @@ final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegat
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             button.action = #selector(handleClick(_:))
             button.target = self
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        }
-
-        // Close popover on outside click
-        eventMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown]
-        ) { [weak self] _ in
-            if let self = self, self.popover.isShown {
-                self.popover.performClose(nil)
-            }
         }
 
         // Start thermal engine
@@ -98,138 +81,42 @@ final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegat
     func shutdown() {
         engine.stop(resetToAuto: true)
         smc.close()
-        if let monitor = eventMonitor {
-            NSEvent.removeMonitor(monitor)
+    }
+
+    // MARK: - Profile Loading
+
+    private func reloadProfiles() {
+        profiles = profileStore.loadAll()
+
+        // Ensure built-in profiles exist
+        let ids = Set(profiles.map(\.id))
+        let builtInIds = ["auto", "quiet", "balanced", "cool", "max"]
+        for id in builtInIds where !ids.contains(id) {
+            let p = makeBuiltInProfile(id: id)
+            try? profileStore.save(p)
+            profiles.append(p)
+        }
+
+        profiles.sort { a, b in
+            // Built-in first (in fixed order), then custom alphabetically
+            let order = ["auto", "quiet", "balanced", "cool", "max"]
+            let ai = order.firstIndex(of: a.id)
+            let bi = order.firstIndex(of: b.id)
+            if let ai = ai, let bi = bi { return ai < bi }
+            if ai != nil { return true }
+            if bi != nil { return false }
+            return a.name < b.name
         }
     }
 
-    // MARK: - Engine Update
-
-    private func handleEngineUpdate(temps: [TemperatureReading], fans: [Fan]) {
-        let hottestTemp = temps.map(\.celsius).max() ?? 0
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-
-            // Update menu bar
-            if hottestTemp > 0 {
-                let color: NSColor
-                if hottestTemp >= 90 { color = .systemRed }
-                else if hottestTemp >= 75 { color = .systemOrange }
-                else { color = .labelColor }
-
-                self.statusItem.button?.attributedTitle = NSAttributedString(
-                    string: String(format: "%.0f\u{00B0}C", hottestTemp),
-                    attributes: [
-                        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                        .foregroundColor: color,
-                    ]
-                )
-            }
-
-            // Update popover (lightweight — just temp)
-            self.dashboardVC.update(temps: temps, fans: fans)
-
-            // Update preferences window (full telemetry)
-            self.prefsController.update(temps: temps, fans: fans)
+    private func profileForId(_ id: String) -> Profile {
+        if let stored = profiles.first(where: { $0.id == id }) {
+            return stored
         }
+        return makeBuiltInProfile(id: id)
     }
 
-    // MARK: - Click Handling
-
-    @objc private func handleClick(_ sender: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent else { return }
-        if event.type == .rightMouseUp {
-            showMenu()
-        } else if popover.isShown {
-            popover.performClose(nil)
-        } else if let button = statusItem.button {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-
-    // MARK: - Right-Click Menu
-
-    private func showMenu() {
-        let menu = NSMenu()
-
-        // Profile submenu
-        let profileMenu = NSMenu()
-        for profile in profiles {
-            let item = NSMenuItem(
-                title: profile.name,
-                action: #selector(menuProfileSelected(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = profile.id
-            item.state = profile.id == currentProfileId ? .on : .off
-            profileMenu.addItem(item)
-        }
-        let profileItem = NSMenuItem(title: "Profile", action: nil, keyEquivalent: "")
-        profileItem.submenu = profileMenu
-        menu.addItem(profileItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // Temperature + fan summary
-        let temps = tempMonitor.readAll()
-        if let hottest = tempMonitor.hottest(from: temps) {
-            let item = NSMenuItem(
-                title: "\(hottest.label): \(String(format: "%.0f", hottest.celsius))\u{00B0}C",
-                action: nil, keyEquivalent: ""
-            )
-            item.isEnabled = false
-            menu.addItem(item)
-        }
-        let fans = fanReader.readAllFans()
-        for fan in fans {
-            let rpmStr = fan.actual.map { String(format: "%.0f RPM", $0) } ?? "-- RPM"
-            let item = NSMenuItem(title: "Fan \(fan.index): \(rpmStr)", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        }
-
-        menu.addItem(NSMenuItem.separator())
-
-        let prefsItem = NSMenuItem(title: "Preferences\u{2026}", action: #selector(openPreferencesFromMenu),
-                                   keyEquivalent: ",")
-        prefsItem.target = self
-        menu.addItem(prefsItem)
-
-        let aboutItem = NSMenuItem(title: "About MySMC", action: #selector(showAbout), keyEquivalent: "")
-        aboutItem.target = self
-        menu.addItem(aboutItem)
-
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit MySMC", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil
-    }
-
-    @objc private func menuProfileSelected(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        applyProfile(id: id)
-    }
-
-    @objc private func openPreferencesFromMenu() {
-        openPreferencesWindow()
-    }
-
-    @objc private func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = "MySMC"
-        alert.informativeText = "Open-source SMC Fan Control for Intel Macs\nVersion 1.0.0"
-        alert.alertStyle = .informational
-        alert.runModal()
-    }
-
-    // MARK: - Profile Management
-
-    private func makeProfile(id: String) -> Profile {
+    private func makeBuiltInProfile(id: String) -> Profile {
         switch id {
         case "auto":     return .autoProfile(fanCount: _fanCount)
         case "quiet":    return .quietProfile(fanCount: _fanCount, minRPM: _minRPM)
@@ -240,9 +127,140 @@ final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegat
         }
     }
 
+    // MARK: - Engine Update
+
+    private func handleEngineUpdate(temps: [TemperatureReading], fans: [Fan]) {
+        let avgTemp: Double
+        if !temps.isEmpty {
+            avgTemp = temps.map(\.celsius).reduce(0, +) / Double(temps.count)
+        } else {
+            avgTemp = 0
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            self.lastTemps = temps
+            self.lastFans = fans
+
+            // Update menu bar with average temperature
+            if avgTemp > 0 {
+                let color: NSColor
+                if avgTemp >= 85 { color = .systemRed }
+                else if avgTemp >= 70 { color = .systemOrange }
+                else { color = .labelColor }
+
+                self.statusItem.button?.attributedTitle = NSAttributedString(
+                    string: String(format: "%.0f\u{00B0}C", avgTemp),
+                    attributes: [
+                        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+                        .foregroundColor: color,
+                    ]
+                )
+            }
+
+            // Update preferences window (full telemetry)
+            self.prefsController.update(temps: temps, fans: fans)
+        }
+    }
+
+    // MARK: - Click → Menu
+
+    @objc private func handleClick(_ sender: NSStatusBarButton) {
+        let menu = buildMenu()
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    private func buildMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        // ── Temperature header ──
+        let avgTemp: Double
+        if !lastTemps.isEmpty {
+            avgTemp = lastTemps.map(\.celsius).reduce(0, +) / Double(lastTemps.count)
+        } else {
+            avgTemp = 0
+        }
+
+        let tempStr = avgTemp > 0 ? String(format: "%.0f\u{00B0}C", avgTemp) : "--\u{00B0}C"
+        let headerItem = NSMenuItem(title: "Temperature: \(tempStr)", action: nil, keyEquivalent: "")
+        headerItem.isEnabled = false
+        if let hottestReading = lastTemps.max(by: { $0.celsius < $1.celsius }) {
+            let peakStr = String(format: "Peak: %.0f\u{00B0}C (%@)", hottestReading.celsius, hottestReading.label)
+            let peakItem = NSMenuItem(title: peakStr, action: nil, keyEquivalent: "")
+            peakItem.isEnabled = false
+            peakItem.indentationLevel = 1
+            menu.addItem(headerItem)
+            menu.addItem(peakItem)
+        } else {
+            menu.addItem(headerItem)
+        }
+
+        // ── Fans ──
+        if !lastFans.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+            for fan in lastFans {
+                let rpmStr = fan.actual.map { String(format: "%.0f RPM", $0) } ?? "-- RPM"
+                let item = NSMenuItem(title: "Fan \(fan.index): \(rpmStr)", action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            }
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        // ── Profiles ──
+        for profile in profiles {
+            let item = NSMenuItem(
+                title: profile.name,
+                action: #selector(menuProfileSelected(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = profile.id
+            item.state = profile.id == currentProfileId ? .on : .off
+            if !profile.builtIn {
+                item.indentationLevel = 1
+            }
+            menu.addItem(item)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        // ── Preferences ──
+        let prefsItem = NSMenuItem(title: "Preferences\u{2026}", action: #selector(openPreferences),
+                                   keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
+        // ── Quit ──
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Quit MySMC", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+
+        return menu
+    }
+
+    // MARK: - Menu Actions
+
+    @objc private func menuProfileSelected(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        applyProfile(id: id)
+    }
+
+    @objc private func openPreferences() {
+        prefsController.showWindow(nil)
+        prefsController.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        prefsController.refreshControls()
+    }
+
+    // MARK: - Profile Management
+
     private func applyProfile(id: String) {
         currentProfileId = id
-        workingProfile = makeProfile(id: id)
+        workingProfile = profileForId(id)
 
         // Sync local fan state from profile
         for config in workingProfile.fans {
@@ -257,39 +275,46 @@ final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegat
         // Apply to engine
         engine.switchProfile(workingProfile)
 
-        // Refresh both UIs
+        // Refresh preferences UI
         DispatchQueue.main.async { [weak self] in
-            self?.dashboardVC.refreshControls()
             self?.prefsController.refreshControls()
         }
     }
 
-    private func openPreferencesWindow() {
-        prefsController.showWindow(nil)
-        prefsController.window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
-        // Ensure profile controls are up to date
-        prefsController.refreshControls()
+    func saveCurrentProfile() {
+        try? profileStore.save(workingProfile)
+        reloadProfiles()
     }
 
-    // MARK: - DashboardDelegate
+    func createProfile(name: String, basedOn: Profile) -> Profile {
+        let id = name.lowercased()
+            .replacingOccurrences(of: " ", with: "_")
+            .filter { $0.isLetter || $0.isNumber || $0 == "_" }
+            + "_\(Int(Date().timeIntervalSince1970) % 100000)"
 
-    func dashboardDidSelectProfile(id: String) {
-        applyProfile(id: id)
+        var newProfile = basedOn
+        newProfile.id = id
+        newProfile.name = name
+        newProfile.builtIn = false
+        newProfile.created = Date()
+        newProfile.modified = Date()
+
+        try? profileStore.save(newProfile)
+        reloadProfiles()
+        return newProfile
     }
 
-    func dashboardDidOpenPreferences() {
-        popover.performClose(nil)
-        openPreferencesWindow()
+    func deleteProfile(id: String) -> Bool {
+        guard profileStore.delete(id: id) else { return false }
+        reloadProfiles()
+        if currentProfileId == id {
+            applyProfile(id: "auto")
+        }
+        return true
     }
 
-    func availableProfiles() -> [(id: String, name: String)] {
-        profiles
-    }
-
-    func activeProfileId() -> String {
-        currentProfileId
+    func duplicateProfile(_ profile: Profile, name: String) -> Profile {
+        return createProfile(name: name, basedOn: profile)
     }
 
     // MARK: - PreferencesDelegate
@@ -347,6 +372,42 @@ final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegat
 
     func preferencesDidSelectProfile(id: String) {
         applyProfile(id: id)
+    }
+
+    func preferencesDidSaveProfile() {
+        saveCurrentProfile()
+    }
+
+    func preferencesDidCreateProfile(name: String) {
+        let newProfile = createProfile(name: name, basedOn: workingProfile)
+        applyProfile(id: newProfile.id)
+    }
+
+    func preferencesDidDuplicateProfile() {
+        let name = workingProfile.name + " Copy"
+        let newProfile = duplicateProfile(workingProfile, name: name)
+        applyProfile(id: newProfile.id)
+    }
+
+    func preferencesDidDeleteProfile(id: String) {
+        _ = deleteProfile(id: id)
+        prefsController.refreshControls()
+    }
+
+    func currentProfile() -> Profile {
+        workingProfile
+    }
+
+    func availableProfiles() -> [(id: String, name: String)] {
+        profiles.map { (id: $0.id, name: $0.name) }
+    }
+
+    func activeProfileId() -> String {
+        currentProfileId
+    }
+
+    func isProfileBuiltIn(id: String) -> Bool {
+        profiles.first(where: { $0.id == id })?.builtIn ?? true
     }
 
     func fanMode(for index: Int) -> FanMode {

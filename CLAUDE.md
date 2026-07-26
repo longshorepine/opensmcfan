@@ -38,9 +38,8 @@ Sources/
 ├── MySMCCore/          Domain: Fan, FanCurve, FanController, Profile,
 │                       ProfileStore, TemperatureMonitor, ThermalEngine
 ├── mysmc/              CLI entry point
-└── App/                GUI: AppDelegate, StatusBarController,
-│                       DashboardViewController (popover), PreferencesWindowController,
-│                       FanCurveEditorView
+└── App/                GUI: AppDelegate, StatusBarController (menu bar),
+│                       PreferencesWindowController, FanCurveEditorView
 Resources/
 └── Info.plist          App bundle config (LSUIElement=true, no Dock icon)
 ```
@@ -94,6 +93,6 @@ Before committing changes, verify:
 
 ## Project Phase
 
-Current: **Phase 6 complete** (Preferences window with Monitor/Profiles tabs, fan curve editor, lightweight popover)
-Next: **Phase 7** — Profile persistence (save/load custom profiles to ~/Library/Application Support/MySMC/)
+Current: **Phase 7 complete** (WiFi-style menu bar, profile persistence via ProfileStore, New/Duplicate/Save/Delete in Preferences)
+Next: **Phase 8** — Launch at Login + auto-apply last profile on startup
 See `vision.md` for full 9-phase roadmap.
