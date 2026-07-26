@@ -5,9 +5,13 @@ Native macOS fan control app for Intel Macs. Reads/writes Apple SMC via IOKit.
 ## Build
 
 ```bash
-make            # Build → .build/mysmc (requires macOS Command Line Tools)
+make            # Build both CLI + GUI app
+make cli        # Build CLI only → .build/mysmc
+make app        # Build GUI only → .build/MySMC.app
 make clean      # Remove build artifacts
-make install    # Copy binary to /usr/local/bin/mysmc
+make install    # Copy CLI to /usr/local/bin/mysmc
+make install-app # Copy app to /Applications/MySMC.app
+make run-app    # Build + launch GUI app (sudo)
 ```
 
 - No Xcode required — uses `swiftc` directly via Makefile
@@ -33,11 +37,15 @@ Sources/
 ├── SMCKit/             IOKit bindings + type codec (sp78, fpe2, flt, etc.)
 ├── MySMCCore/          Domain: Fan, FanCurve, FanController, Profile,
 │                       ProfileStore, TemperatureMonitor, ThermalEngine
-└── mysmc/              CLI entry point
+├── mysmc/              CLI entry point
+└── App/                GUI: AppDelegate, StatusBarController, DashboardViewController
+Resources/
+└── Info.plist          App bundle config (LSUIElement=true, no Dock icon)
 ```
 
+CLI and GUI are separate build targets sharing SMCKit + MySMCCore.
 All Swift files compile as a single module via `-import-objc-header`.
-No cross-module imports — everything is flat within one `mysmc` module.
+No cross-module imports — everything is flat within one module per target.
 
 ## Key Files
 
@@ -84,6 +92,6 @@ Before committing changes, verify:
 
 ## Project Phase
 
-Current: **Phase 3 complete** (SMCKit + Core + CLI)
-Next: **Phase 4** — Menu Bar App Shell (NSStatusItem, popover dashboard, live temps/fans)
+Current: **Phase 4 complete** (SMCKit + Core + CLI + Menu Bar App)
+Next: **Phase 5** — Fan Control UI (sliders, mode toggles, profile switching in GUI)
 See `vision.md` for full 9-phase roadmap.
