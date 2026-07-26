@@ -97,6 +97,13 @@ Before committing changes, verify:
 
 ## Project Phase
 
-Current: **Phase 8 in progress** (auto-apply last profile on startup via UserDefaults; Launch at Login deferred — needs privileged helper)
-Next: finish Phase 8 (Launch at Login), then **Phase 9** — Distribution
+**All phases complete (Phase 9 done).**
+
+Phase 9 delivered:
+- Auto-elevate to root on first launch (NSAlert → AuthorizationExecuteWithPrivileges C shim)
+- LaunchAgent install (`sudo make install-agent` / `sudo ./scripts/install.sh`)
+- DMG packaging (`make package` → `.dist/MySMC-<version>.dmg`)
+- Uninstaller script (`sudo ./scripts/uninstall.sh`)
+
+Code signing / notarization deferred — requires Apple Developer ID certificate.
 See `vision.md` for full 9-phase roadmap.
