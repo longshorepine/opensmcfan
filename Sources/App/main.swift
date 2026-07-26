@@ -9,7 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // SMC fan control requires root. If we're not running as root,
         // ask the user to authenticate and re-launch with elevated privileges.
-        if getuid() != 0 {
+        if geteuid() != 0 {
             requestPrivilegesAndRelaunch()
             return
         }
@@ -33,6 +33,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Privilege Elevation
 
     private func requestPrivilegesAndRelaunch() {
+        // Bring app to front — accessory-policy apps don't auto-activate,
+        // so the alert would appear behind other windows without this.
+        NSApp.activate(ignoringOtherApps: true)
+
         // Explain why before the password prompt appears.
         let info = NSAlert()
         info.messageText = "Administrator Access Required"
