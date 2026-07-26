@@ -279,11 +279,8 @@ final class PreferencesWindowController: NSWindowController {
         profilesStack.addArrangedSubview(buttonRow)
         profilesStack.addArrangedSubview(makeDivider())
 
-        // Populate the popup and update button states
-        refreshProfilePopup()
-
-        // Fan config sections will be built dynamically
-        rebuildFanConfigs()
+        // Popup and fan configs are populated by refreshControls()
+        // when the window is opened (prefsDelegate is nil at init time)
 
         return container
     }
@@ -394,11 +391,10 @@ final class PreferencesWindowController: NSWindowController {
     // MARK: - Rebuild Fan Configs (Profiles Tab)
 
     private func rebuildFanConfigs() {
-        // Remove existing fan config views (everything after the divider following profile row)
+        // Remove existing fan config views (everything after profile row + buttons + divider)
         let existingFanViews = profilesStack.arrangedSubviews
-        // Keep the first 2 views (profile row + divider)
-        if existingFanViews.count > 2 {
-            for view in existingFanViews[2...] {
+        if existingFanViews.count > 3 {
+            for view in existingFanViews[3...] {
                 view.removeFromSuperview()
             }
         }
