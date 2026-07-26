@@ -60,81 +60,90 @@ public struct Profile: Codable, Identifiable {
     }
 
     // MARK: - Built-in profiles
+    //
+    // All factories take the actual [Fan] list read from hardware so each fan
+    // gets its own min/max limits rather than inheriting from fan 0.
+    // referenceSensor is nil for curve profiles → engine falls back to hottest
+    // sensor, which works correctly on any Mac model.
 
     /// All fans under SMC automatic control.
-    public static func autoProfile(fanCount: Int) -> Profile {
+    public static func autoProfile(fans: [Fan]) -> Profile {
         Profile(
             id: "auto",
             name: "Auto",
             icon: "a.circle",
             description: "All fans under SMC automatic control",
             builtIn: true,
-            fans: (0..<fanCount).map { FanConfig(fanIndex: $0, mode: .auto) }
+            fans: fans.map { FanConfig(fanIndex: $0.index, label: $0.label, mode: .auto) }
         )
     }
 
-    /// All fans at hardware minimum.
-    public static func quietProfile(fanCount: Int, minRPM: Double) -> Profile {
+    /// All fans at their individual hardware minimum.
+    public static func quietProfile(fans: [Fan]) -> Profile {
         Profile(
             id: "quiet",
             name: "Quiet",
             icon: "speaker.slash",
             description: "All fans at minimum RPM — nearly silent",
             builtIn: true,
-            fans: (0..<fanCount).map {
-                FanConfig(fanIndex: $0, mode: .fixed, fixedRPM: minRPM)
+            fans: fans.map {
+                FanConfig(fanIndex: $0.index, label: $0.label,
+                          mode: .fixed, fixedRPM: $0.minimum ?? 1200)
             }
         )
     }
 
-    /// Gentle curve ramp.
-    public static func balancedProfile(fanCount: Int, minRPM: Double, maxRPM: Double) -> Profile {
+    /// Gentle curve ramp, tuned per-fan.
+    public static func balancedProfile(fans: [Fan]) -> Profile {
         Profile(
             id: "balanced",
             name: "Balanced",
             icon: "dial.min",
             description: "Gentle ramp — moderate cooling with low noise",
             builtIn: true,
-            fans: (0..<fanCount).map {
-                FanConfig(
-                    fanIndex: $0,
-                    mode: .curve,
-                    referenceSensor: "TC0D",
-                    curve: .balanced(minRPM: minRPM, maxRPM: maxRPM)
+            fans: fans.map {
+                let lo = $0.minimum ?? 1200
+                let hi = $0.maximum ?? 6200
+                return FanConfig(
+                    fanIndex: $0.index, label: $0.label,
+                    mode: .curve, referenceSensor: nil,   // nil → hottest sensor on any Mac
+                    curve: .balanced(minRPM: lo, maxRPM: hi)
                 )
             }
         )
     }
 
-    /// Aggressive curve ramp.
-    public static func coolProfile(fanCount: Int, minRPM: Double, maxRPM: Double) -> Profile {
+    /// Aggressive curve ramp, tuned per-fan.
+    public static func coolProfile(fans: [Fan]) -> Profile {
         Profile(
             id: "cool",
             name: "Cool",
             icon: "snowflake",
             description: "Aggressive ramp — maximum cooling priority",
             builtIn: true,
-            fans: (0..<fanCount).map {
-                FanConfig(
-                    fanIndex: $0,
-                    mode: .curve,
-                    referenceSensor: "TC0D",
-                    curve: .cool(minRPM: minRPM, maxRPM: maxRPM)
+            fans: fans.map {
+                let lo = $0.minimum ?? 1200
+                let hi = $0.maximum ?? 6200
+                return FanConfig(
+                    fanIndex: $0.index, label: $0.label,
+                    mode: .curve, referenceSensor: nil,   // nil → hottest sensor on any Mac
+                    curve: .cool(minRPM: lo, maxRPM: hi)
                 )
             }
         )
     }
 
-    /// All fans at hardware maximum.
-    public static func maxProfile(fanCount: Int, maxRPM: Double) -> Profile {
+    /// All fans at their individual hardware maximum.
+    public static func maxProfile(fans: [Fan]) -> Profile {
         Profile(
             id: "max",
             name: "Max",
             icon: "flame",
             description: "All fans at maximum RPM — full blast",
             builtIn: true,
-            fans: (0..<fanCount).map {
-                FanConfig(fanIndex: $0, mode: .fixed, fixedRPM: maxRPM)
+            fans: fans.map {
+                FanConfig(fanIndex: $0.index, label: $0.label,
+                          mode: .fixed, fixedRPM: $0.maximum ?? 6200)
             }
         )
     }

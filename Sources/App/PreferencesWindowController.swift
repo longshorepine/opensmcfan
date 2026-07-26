@@ -22,8 +22,8 @@ protocol PreferencesDelegate: AnyObject {
     func fanCurve(for index: Int) -> FanCurve?
     func fanReferenceSensor(for index: Int) -> String?
     func fanCount() -> Int
-    func minRPM() -> Double
-    func maxRPM() -> Double
+    func fanMinRPM(for index: Int) -> Double
+    func fanMaxRPM(for index: Int) -> Double
 }
 
 // MARK: - Preferences Window Controller
@@ -499,8 +499,8 @@ final class PreferencesWindowController: NSWindowController {
             sliderRow.spacing = 8
             sliderRow.translatesAutoresizingMaskIntoConstraints = false
 
-            let min = delegate.minRPM()
-            let max = delegate.maxRPM()
+            let min = delegate.fanMinRPM(for: fanIndex)
+            let max = delegate.fanMaxRPM(for: fanIndex)
             let current = delegate.fanTargetRPM(for: fanIndex) ?? min
 
             let slider = NSSlider(value: current, minValue: min, maxValue: max,
@@ -563,13 +563,14 @@ final class PreferencesWindowController: NSWindowController {
             let editor = FanCurveEditorView()
             editor.translatesAutoresizingMaskIntoConstraints = false
             editor.delegate = self
-            editor.minRPM = delegate.minRPM()
-            editor.maxRPM = delegate.maxRPM()
+            editor.minRPM = delegate.fanMinRPM(for: fanIndex)
+            editor.maxRPM = delegate.fanMaxRPM(for: fanIndex)
 
             if let existingCurve = delegate.fanCurve(for: fanIndex) {
                 editor.curve = existingCurve
             } else {
-                editor.curve = .balanced(minRPM: delegate.minRPM(), maxRPM: delegate.maxRPM())
+                editor.curve = .balanced(minRPM: delegate.fanMinRPM(for: fanIndex),
+                                         maxRPM: delegate.fanMaxRPM(for: fanIndex))
             }
 
             editor.fanIndex = fanIndex

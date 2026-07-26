@@ -28,8 +28,7 @@ final class StatusBarController: NSObject, PreferencesDelegate {
     private var fanCurves: [Int: FanCurve] = [:]
     private var fanSensors: [Int: String?] = [:]
     private var _fanCount: Int = 0
-    private var _minRPM: Double = 1200
-    private var _maxRPM: Double = 6200
+    private var _fans: [Fan] = []           // hardware fan data, keyed by fan.index
 
     init(smc: SMCConnection) {
         self.smc = smc
@@ -45,16 +44,13 @@ final class StatusBarController: NSObject, PreferencesDelegate {
 
         prefsController.prefsDelegate = self
 
-        // Read hardware info
+        // Read hardware info (includes per-fan labels, min, max)
         let fans = fanReader.readAllFans()
         _fanCount = fans.count
-        if let first = fans.first {
-            _minRPM = first.minimum ?? 1200
-            _maxRPM = first.maximum ?? 6200
-        }
+        _fans = fans
 
         // Initialize profile store and load profiles
-        profileStore.createDefaultsIfNeeded(fanCount: _fanCount, minRPM: _minRPM, maxRPM: _maxRPM)
+        profileStore.createDefaultsIfNeeded(fans: _fans)
         reloadProfiles()
 
         // Restore last active profile (or default to auto)
@@ -123,12 +119,12 @@ final class StatusBarController: NSObject, PreferencesDelegate {
 
     private func makeBuiltInProfile(id: String) -> Profile {
         switch id {
-        case "auto":     return .autoProfile(fanCount: _fanCount)
-        case "quiet":    return .quietProfile(fanCount: _fanCount, minRPM: _minRPM)
-        case "balanced": return .balancedProfile(fanCount: _fanCount, minRPM: _minRPM, maxRPM: _maxRPM)
-        case "cool":     return .coolProfile(fanCount: _fanCount, minRPM: _minRPM, maxRPM: _maxRPM)
-        case "max":      return .maxProfile(fanCount: _fanCount, maxRPM: _maxRPM)
-        default:         return .autoProfile(fanCount: _fanCount)
+        case "auto":     return .autoProfile(fans: _fans)
+        case "quiet":    return .quietProfile(fans: _fans)
+        case "balanced": return .balancedProfile(fans: _fans)
+        case "cool":     return .coolProfile(fans: _fans)
+        case "max":      return .maxProfile(fans: _fans)
+        default:         return .autoProfile(fans: _fans)
         }
     }
 
@@ -332,11 +328,12 @@ final class StatusBarController: NSObject, PreferencesDelegate {
 
         workingProfile.fans[i].mode = mode
         if mode == .fixed {
-            let rpm = fanTargetRPMs[fanIndex] ?? workingProfile.fans[i].fixedRPM ?? _minRPM
+            let rpm = fanTargetRPMs[fanIndex] ?? workingProfile.fans[i].fixedRPM ?? fanMinRPM(for: fanIndex)
             workingProfile.fans[i].fixedRPM = rpm
             fanTargetRPMs[fanIndex] = rpm
         } else if mode == .curve {
-            let curve = fanCurves[fanIndex] ?? .balanced(minRPM: _minRPM, maxRPM: _maxRPM)
+            let curve = fanCurves[fanIndex] ?? .balanced(minRPM: fanMinRPM(for: fanIndex),
+                                                          maxRPM: fanMaxRPM(for: fanIndex))
             workingProfile.fans[i].curve = curve
             fanCurves[fanIndex] = curve
             workingProfile.fans[i].referenceSensor = fanSensors[fanIndex] ?? nil
@@ -436,11 +433,11 @@ final class StatusBarController: NSObject, PreferencesDelegate {
         _fanCount
     }
 
-    func minRPM() -> Double {
-        _minRPM
+    func fanMinRPM(for index: Int) -> Double {
+        _fans.first(where: { $0.index == index })?.minimum ?? 1200
     }
 
-    func maxRPM() -> Double {
-        _maxRPM
+    func fanMaxRPM(for index: Int) -> Double {
+        _fans.first(where: { $0.index == index })?.maximum ?? 6200
     }
 }

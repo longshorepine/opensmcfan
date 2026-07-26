@@ -161,22 +161,13 @@ func cmdProfile(smc: SMCConnection, name: String) {
         exit(1)
     }
 
-    // Get hardware limits from first fan
-    let minRPM = fans.first?.minimum ?? 1200
-    let maxRPM = fans.first?.maximum ?? 6200
-
     let profile: Profile
     switch name {
-    case "auto":
-        profile = .autoProfile(fanCount: fanCount)
-    case "quiet":
-        profile = .quietProfile(fanCount: fanCount, minRPM: minRPM)
-    case "balanced":
-        profile = .balancedProfile(fanCount: fanCount, minRPM: minRPM, maxRPM: maxRPM)
-    case "cool":
-        profile = .coolProfile(fanCount: fanCount, minRPM: minRPM, maxRPM: maxRPM)
-    case "max":
-        profile = .maxProfile(fanCount: fanCount, maxRPM: maxRPM)
+    case "auto":      profile = .autoProfile(fans: fans)
+    case "quiet":     profile = .quietProfile(fans: fans)
+    case "balanced":  profile = .balancedProfile(fans: fans)
+    case "cool":      profile = .coolProfile(fans: fans)
+    case "max":       profile = .maxProfile(fans: fans)
     default:
         // Try loading from disk
         let store = ProfileStore()
@@ -198,7 +189,8 @@ func cmdProfile(smc: SMCConnection, name: String) {
             try? controller.setAuto(fan: config.fanIndex)
             print("  Fan \(config.fanIndex): AUTO")
         case .fixed:
-            let rpm = config.fixedRPM ?? minRPM
+            let fanMin = fans.first(where: { $0.index == config.fanIndex })?.minimum ?? 1200
+            let rpm = config.fixedRPM ?? fanMin
             try? controller.setFixed(fan: config.fanIndex, rpm: rpm)
             print("  Fan \(config.fanIndex): \(String(format: "%.0f", rpm)) RPM (fixed)")
         case .curve:

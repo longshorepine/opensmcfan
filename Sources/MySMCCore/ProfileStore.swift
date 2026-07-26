@@ -78,16 +78,16 @@ public final class ProfileStore {
     }
 
     /// Create default built-in profiles if none exist.
-    public func createDefaultsIfNeeded(fanCount: Int, minRPM: Double, maxRPM: Double) {
+    public func createDefaultsIfNeeded(fans: [Fan]) {
         let existing = loadAll()
         let existingIDs = Set(existing.map(\.id))
 
         let defaults: [Profile] = [
-            .autoProfile(fanCount: fanCount),
-            .quietProfile(fanCount: fanCount, minRPM: minRPM),
-            .balancedProfile(fanCount: fanCount, minRPM: minRPM, maxRPM: maxRPM),
-            .coolProfile(fanCount: fanCount, minRPM: minRPM, maxRPM: maxRPM),
-            .maxProfile(fanCount: fanCount, maxRPM: maxRPM),
+            .autoProfile(fans: fans),
+            .quietProfile(fans: fans),
+            .balancedProfile(fans: fans),
+            .coolProfile(fans: fans),
+            .maxProfile(fans: fans),
         ]
 
         for profile in defaults where !existingIDs.contains(profile.id) {

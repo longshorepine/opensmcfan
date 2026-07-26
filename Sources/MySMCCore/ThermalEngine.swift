@@ -41,6 +41,8 @@ public final class ThermalEngine {
     public func start(profile: Profile) {
         engineQueue.async { [weak self] in
             guard let self = self else { return }
+            // Cache hardware minimums so setFixed/setAuto can use correct floor/restore values
+            self.fanController.loadHardwareLimits(fanCount: profile.fans.count)
             self.activeProfile = profile
             self.lastTargets = [:]
             self.lastTickTime = nil

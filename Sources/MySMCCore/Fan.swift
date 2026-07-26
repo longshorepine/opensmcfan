@@ -44,6 +44,14 @@ public struct FanReader {
     /// Read a single fan's state.
     public func readFan(index: Int) -> Fan {
         var fan = Fan(index: index)
+
+        // Try to read the hardware-assigned fan name (e.g. "Left Fan", "Right Fan")
+        if let val = try? smc.read(key: "F\(index)ID"),
+           case .string(let name) = val {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { fan.label = trimmed }
+        }
+
         let suffixes: [(String, WritableKeyPath<Fan, Double?>)] = [
             ("Ac", \.actual),
             ("Mn", \.minimum),

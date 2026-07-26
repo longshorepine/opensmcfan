@@ -6,34 +6,56 @@ import Foundation
 public final class FanController {
     private let smc: SMCConnection
     private let reader: FanReader
+    // Factory-minimum RPMs cached at startup — restored when returning to auto mode.
+    // We cache these because setFixed writes to F{i}Mn, making future reads reflect
+    // the forced value rather than the hardware floor.
+    private var originalMins: [Int: Double] = [:]
 
     public init(smc: SMCConnection) {
         self.smc = smc
         self.reader = FanReader(smc: smc)
     }
 
-    /// Set a fan to automatic (SMC-controlled) mode.
+    /// Cache each fan's factory-minimum RPM. Call once before any control operations.
+    public func loadHardwareLimits(fanCount: Int) {
+        for i in 0..<fanCount {
+            let fan = reader.readFan(index: i)
+            if let min = fan.minimum {
+                originalMins[i] = min
+            }
+        }
+    }
+
+    /// Set a fan to automatic (SMC-controlled) mode, restoring its factory minimum.
     public func setAuto(fan index: Int) throws {
+        // Restore original minimum so the SMC auto-algorithm has the right floor
+        if let original = originalMins[index] {
+            try? reader.setMinimum(fan: index, rpm: original)   // best-effort
+        }
         try reader.setMode(fan: index, forced: false)
     }
 
     /// Set all fans to automatic mode.
     public func setAllAuto(fanCount: Int) {
         for i in 0..<fanCount {
-            try? reader.setMode(fan: i, forced: false)
+            try? setAuto(fan: i)
         }
     }
 
     /// Set a fan to a fixed RPM target, clamped to hardware min/max.
+    ///
+    /// Uses both the minimum-RPM method (most compatible across Mac models) and
+    /// forced-mode+target for belt-and-suspenders coverage.
     public func setFixed(fan index: Int, rpm: Double) throws {
         let fan = reader.readFan(index: index)
-        let clamped = clampRPM(rpm, fan: fan)
-        try reader.setMode(fan: index, forced: true)
-        try reader.setTarget(fan: index, rpm: clamped)
+        let clamped = clamp(rpm, for: fan, index: index)
+        try reader.setMinimum(fan: index, rpm: clamped)   // primary: works on all Intel Macs
+        try? reader.setMode(fan: index, forced: true)      // secondary: direct override
+        try? reader.setTarget(fan: index, rpm: clamped)    // secondary: target
     }
 
-    /// Apply a target RPM from curve evaluation, with ramp-rate limiting.
-    /// Returns the actual RPM that was set.
+    /// Apply a curve-evaluated RPM with ramp-rate limiting.
+    /// Returns the actual RPM written.
     @discardableResult
     public func applyCurveTarget(
         fan index: Int,
@@ -43,9 +65,8 @@ public final class FanController {
         deltaTime: TimeInterval
     ) throws -> Double {
         let fan = reader.readFan(index: index)
-        var target = clampRPM(targetRPM, fan: fan)
+        var target = clamp(targetRPM, for: fan, index: index)
 
-        // Apply ramp rate limiting
         if let last = lastRPM {
             let maxDelta = rampRate * deltaTime
             let diff = target - last
@@ -54,14 +75,16 @@ public final class FanController {
             }
         }
 
-        try reader.setMode(fan: index, forced: true)
-        try reader.setTarget(fan: index, rpm: target)
+        try reader.setMinimum(fan: index, rpm: target)    // primary
+        try? reader.setMode(fan: index, forced: true)      // secondary
+        try? reader.setTarget(fan: index, rpm: target)     // secondary
         return target
     }
 
-    /// Clamp RPM to the fan's hardware min/max.
-    private func clampRPM(_ rpm: Double, fan: Fan) -> Double {
-        let lo = fan.minimum ?? 0
+    // Clamp to hardware limits, using cached original min as the lower bound.
+    // fan.minimum may reflect our own prior setFixed write, not the factory floor.
+    private func clamp(_ rpm: Double, for fan: Fan, index: Int) -> Double {
+        let lo = originalMins[index] ?? fan.minimum ?? 0
         let hi = fan.maximum ?? 6500
         return min(max(rpm, lo), hi)
     }
