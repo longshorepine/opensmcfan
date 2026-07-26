@@ -38,7 +38,9 @@ Sources/
 ├── MySMCCore/          Domain: Fan, FanCurve, FanController, Profile,
 │                       ProfileStore, TemperatureMonitor, ThermalEngine
 ├── mysmc/              CLI entry point
-└── App/                GUI: AppDelegate, StatusBarController, DashboardViewController
+└── App/                GUI: AppDelegate, StatusBarController,
+│                       DashboardViewController (popover), PreferencesWindowController,
+│                       FanCurveEditorView
 Resources/
 └── Info.plist          App bundle config (LSUIElement=true, no Dock icon)
 ```
@@ -92,6 +94,6 @@ Before committing changes, verify:
 
 ## Project Phase
 
-Current: **Phase 5 complete** (SMCKit + Core + CLI + Menu Bar App + Fan Control UI)
-Next: **Phase 6** — Fan Curve Editor (visual temp→RPM graph with draggable control points)
+Current: **Phase 6 complete** (Preferences window with Monitor/Profiles tabs, fan curve editor, lightweight popover)
+Next: **Phase 7** — Profile persistence (save/load custom profiles to ~/Library/Application Support/MySMC/)
 See `vision.md` for full 9-phase roadmap.

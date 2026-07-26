@@ -1,22 +1,10 @@
 import AppKit
 
-// MARK: - Dashboard Delegate
-
-/// Callback protocol for user actions in the dashboard popover.
-protocol DashboardDelegate: AnyObject {
-    func dashboardDidChangeFanMode(fanIndex: Int, mode: FanMode)
-    func dashboardDidChangeFanRPM(fanIndex: Int, rpm: Double)
-    func dashboardDidSelectProfile(id: String)
-    func availableProfiles() -> [(id: String, name: String)]
-    func activeProfileId() -> String
-    func fanMode(for index: Int) -> FanMode
-    func fanTargetRPM(for index: Int) -> Double?
-}
-
 // MARK: - Status Bar Controller
 
-/// Manages the menu bar icon, popover dashboard, fan control, and profile switching.
-final class StatusBarController: NSObject, DashboardDelegate {
+/// Manages the menu bar icon, popover dashboard, preferences window,
+/// fan control, and profile switching.
+final class StatusBarController: NSObject, DashboardDelegate, PreferencesDelegate {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let smc: SMCConnection
@@ -24,6 +12,7 @@ final class StatusBarController: NSObject, DashboardDelegate {
     private let fanReader: FanReader
     private let tempMonitor: TemperatureMonitor
     private let dashboardVC: DashboardViewController
+    private let prefsController: PreferencesWindowController
     private var eventMonitor: Any?
 
     // Profile state
@@ -31,12 +20,14 @@ final class StatusBarController: NSObject, DashboardDelegate {
     private var currentProfileId: String = "auto"
     private var workingProfile: Profile!
 
-    // Fan state (working copy — overrides from user interaction)
+    // Fan state (working copy)
     private var fanModes: [Int: FanMode] = [:]
     private var fanTargetRPMs: [Int: Double] = [:]
-    private var fanCount: Int = 0
-    private var minRPM: Double = 1200
-    private var maxRPM: Double = 6200
+    private var fanCurves: [Int: FanCurve] = [:]
+    private var fanSensors: [Int: String?] = [:]
+    private var _fanCount: Int = 0
+    private var _minRPM: Double = 1200
+    private var _maxRPM: Double = 6200
 
     init(smc: SMCConnection) {
         self.smc = smc
@@ -44,6 +35,7 @@ final class StatusBarController: NSObject, DashboardDelegate {
         self.fanReader = FanReader(smc: smc)
         self.tempMonitor = TemperatureMonitor(smc: smc)
         self.dashboardVC = DashboardViewController()
+        self.prefsController = PreferencesWindowController()
 
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
@@ -53,13 +45,14 @@ final class StatusBarController: NSObject, DashboardDelegate {
         super.init()
 
         dashboardVC.delegate = self
+        prefsController.prefsDelegate = self
 
         // Read hardware info
         let fans = fanReader.readAllFans()
-        fanCount = fans.count
+        _fanCount = fans.count
         if let first = fans.first {
-            minRPM = first.minimum ?? 1200
-            maxRPM = first.maximum ?? 6200
+            _minRPM = first.minimum ?? 1200
+            _maxRPM = first.maximum ?? 6200
         }
 
         // Build profile list
@@ -73,13 +66,13 @@ final class StatusBarController: NSObject, DashboardDelegate {
 
         // Start with Auto profile
         workingProfile = makeProfile(id: "auto")
-        for i in 0..<fanCount {
+        for i in 0..<_fanCount {
             fanModes[i] = .auto
         }
 
         // Configure status bar button
         if let button = statusItem.button {
-            button.title = "--°C"
+            button.title = "--\u{00B0}C"
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             button.action = #selector(handleClick(_:))
             button.target = self
@@ -110,7 +103,7 @@ final class StatusBarController: NSObject, DashboardDelegate {
         }
     }
 
-    // MARK: - Engine Update → UI
+    // MARK: - Engine Update
 
     private func handleEngineUpdate(temps: [TemperatureReading], fans: [Fan]) {
         let hottestTemp = temps.map(\.celsius).max() ?? 0
@@ -126,7 +119,7 @@ final class StatusBarController: NSObject, DashboardDelegate {
                 else { color = .labelColor }
 
                 self.statusItem.button?.attributedTitle = NSAttributedString(
-                    string: String(format: "%.0f°C", hottestTemp),
+                    string: String(format: "%.0f\u{00B0}C", hottestTemp),
                     attributes: [
                         .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
                         .foregroundColor: color,
@@ -134,8 +127,11 @@ final class StatusBarController: NSObject, DashboardDelegate {
                 )
             }
 
-            // Update dashboard
+            // Update popover (lightweight — just temp)
             self.dashboardVC.update(temps: temps, fans: fans)
+
+            // Update preferences window (full telemetry)
+            self.prefsController.update(temps: temps, fans: fans)
         }
     }
 
@@ -181,7 +177,7 @@ final class StatusBarController: NSObject, DashboardDelegate {
         let temps = tempMonitor.readAll()
         if let hottest = tempMonitor.hottest(from: temps) {
             let item = NSMenuItem(
-                title: "\(hottest.label): \(String(format: "%.0f", hottest.celsius))°C",
+                title: "\(hottest.label): \(String(format: "%.0f", hottest.celsius))\u{00B0}C",
                 action: nil, keyEquivalent: ""
             )
             item.isEnabled = false
@@ -196,6 +192,11 @@ final class StatusBarController: NSObject, DashboardDelegate {
         }
 
         menu.addItem(NSMenuItem.separator())
+
+        let prefsItem = NSMenuItem(title: "Preferences\u{2026}", action: #selector(openPreferencesFromMenu),
+                                   keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
 
         let aboutItem = NSMenuItem(title: "About MySMC", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
@@ -214,6 +215,10 @@ final class StatusBarController: NSObject, DashboardDelegate {
         applyProfile(id: id)
     }
 
+    @objc private func openPreferencesFromMenu() {
+        openPreferencesWindow()
+    }
+
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "MySMC"
@@ -226,12 +231,12 @@ final class StatusBarController: NSObject, DashboardDelegate {
 
     private func makeProfile(id: String) -> Profile {
         switch id {
-        case "auto":     return .autoProfile(fanCount: fanCount)
-        case "quiet":    return .quietProfile(fanCount: fanCount, minRPM: minRPM)
-        case "balanced": return .balancedProfile(fanCount: fanCount, minRPM: minRPM, maxRPM: maxRPM)
-        case "cool":     return .coolProfile(fanCount: fanCount, minRPM: minRPM, maxRPM: maxRPM)
-        case "max":      return .maxProfile(fanCount: fanCount, maxRPM: maxRPM)
-        default:         return .autoProfile(fanCount: fanCount)
+        case "auto":     return .autoProfile(fanCount: _fanCount)
+        case "quiet":    return .quietProfile(fanCount: _fanCount, minRPM: _minRPM)
+        case "balanced": return .balancedProfile(fanCount: _fanCount, minRPM: _minRPM, maxRPM: _maxRPM)
+        case "cool":     return .coolProfile(fanCount: _fanCount, minRPM: _minRPM, maxRPM: _maxRPM)
+        case "max":      return .maxProfile(fanCount: _fanCount, maxRPM: _maxRPM)
+        default:         return .autoProfile(fanCount: _fanCount)
         }
     }
 
@@ -245,47 +250,38 @@ final class StatusBarController: NSObject, DashboardDelegate {
             if let rpm = config.fixedRPM {
                 fanTargetRPMs[config.fanIndex] = rpm
             }
+            fanCurves[config.fanIndex] = config.curve
+            fanSensors[config.fanIndex] = config.referenceSensor
         }
 
-        // Apply to engine (full switch — resets ramp state)
+        // Apply to engine
         engine.switchProfile(workingProfile)
 
-        // Refresh dashboard controls
+        // Refresh both UIs
         DispatchQueue.main.async { [weak self] in
             self?.dashboardVC.refreshControls()
+            self?.prefsController.refreshControls()
         }
+    }
+
+    private func openPreferencesWindow() {
+        prefsController.showWindow(nil)
+        prefsController.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        // Ensure profile controls are up to date
+        prefsController.refreshControls()
     }
 
     // MARK: - DashboardDelegate
 
-    func dashboardDidChangeFanMode(fanIndex: Int, mode: FanMode) {
-        fanModes[fanIndex] = mode
-
-        guard let i = workingProfile.fans.firstIndex(where: { $0.fanIndex == fanIndex }) else { return }
-
-        workingProfile.fans[i].mode = mode
-        if mode == .fixed {
-            let rpm = fanTargetRPMs[fanIndex] ?? workingProfile.fans[i].fixedRPM ?? minRPM
-            workingProfile.fans[i].fixedRPM = rpm
-            fanTargetRPMs[fanIndex] = rpm
-        }
-
-        engine.updateFanConfig(fanIndex: fanIndex, config: workingProfile.fans[i])
-    }
-
-    func dashboardDidChangeFanRPM(fanIndex: Int, rpm: Double) {
-        fanTargetRPMs[fanIndex] = rpm
-
-        guard let i = workingProfile.fans.firstIndex(where: { $0.fanIndex == fanIndex }) else { return }
-        workingProfile.fans[i].fixedRPM = rpm
-        workingProfile.fans[i].mode = .fixed
-        fanModes[fanIndex] = .fixed
-
-        engine.updateFanConfig(fanIndex: fanIndex, config: workingProfile.fans[i])
-    }
-
     func dashboardDidSelectProfile(id: String) {
         applyProfile(id: id)
+    }
+
+    func dashboardDidOpenPreferences() {
+        popover.performClose(nil)
+        openPreferencesWindow()
     }
 
     func availableProfiles() -> [(id: String, name: String)] {
@@ -296,11 +292,88 @@ final class StatusBarController: NSObject, DashboardDelegate {
         currentProfileId
     }
 
+    // MARK: - PreferencesDelegate
+
+    func preferencesDidChangeFanMode(fanIndex: Int, mode: FanMode) {
+        fanModes[fanIndex] = mode
+
+        guard let i = workingProfile.fans.firstIndex(where: { $0.fanIndex == fanIndex }) else { return }
+
+        workingProfile.fans[i].mode = mode
+        if mode == .fixed {
+            let rpm = fanTargetRPMs[fanIndex] ?? workingProfile.fans[i].fixedRPM ?? _minRPM
+            workingProfile.fans[i].fixedRPM = rpm
+            fanTargetRPMs[fanIndex] = rpm
+        } else if mode == .curve {
+            let curve = fanCurves[fanIndex] ?? .balanced(minRPM: _minRPM, maxRPM: _maxRPM)
+            workingProfile.fans[i].curve = curve
+            fanCurves[fanIndex] = curve
+            workingProfile.fans[i].referenceSensor = fanSensors[fanIndex] ?? nil
+        }
+
+        engine.updateFanConfig(fanIndex: fanIndex, config: workingProfile.fans[i])
+    }
+
+    func preferencesDidChangeFanRPM(fanIndex: Int, rpm: Double) {
+        fanTargetRPMs[fanIndex] = rpm
+
+        guard let i = workingProfile.fans.firstIndex(where: { $0.fanIndex == fanIndex }) else { return }
+        workingProfile.fans[i].fixedRPM = rpm
+        workingProfile.fans[i].mode = .fixed
+        fanModes[fanIndex] = .fixed
+
+        engine.updateFanConfig(fanIndex: fanIndex, config: workingProfile.fans[i])
+    }
+
+    func preferencesDidChangeFanCurve(fanIndex: Int, curve: FanCurve) {
+        fanCurves[fanIndex] = curve
+
+        guard let i = workingProfile.fans.firstIndex(where: { $0.fanIndex == fanIndex }) else { return }
+        workingProfile.fans[i].curve = curve
+        workingProfile.fans[i].mode = .curve
+        fanModes[fanIndex] = .curve
+
+        engine.updateFanConfig(fanIndex: fanIndex, config: workingProfile.fans[i])
+    }
+
+    func preferencesDidChangeFanReferenceSensor(fanIndex: Int, sensorKey: String?) {
+        fanSensors[fanIndex] = sensorKey
+
+        guard let i = workingProfile.fans.firstIndex(where: { $0.fanIndex == fanIndex }) else { return }
+        workingProfile.fans[i].referenceSensor = sensorKey
+
+        engine.updateFanConfig(fanIndex: fanIndex, config: workingProfile.fans[i])
+    }
+
+    func preferencesDidSelectProfile(id: String) {
+        applyProfile(id: id)
+    }
+
     func fanMode(for index: Int) -> FanMode {
         fanModes[index] ?? .auto
     }
 
     func fanTargetRPM(for index: Int) -> Double? {
         fanTargetRPMs[index]
+    }
+
+    func fanCurve(for index: Int) -> FanCurve? {
+        fanCurves[index]
+    }
+
+    func fanReferenceSensor(for index: Int) -> String? {
+        fanSensors[index] ?? nil
+    }
+
+    func fanCount() -> Int {
+        _fanCount
+    }
+
+    func minRPM() -> Double {
+        _minRPM
+    }
+
+    func maxRPM() -> Double {
+        _maxRPM
     }
 }
