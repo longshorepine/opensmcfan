@@ -1,5 +1,6 @@
 # Build output
 .build/
+.dist/
 *.o
 *.d
 
@@ -7,7 +8,7 @@
 .swiftpm/
 Packages/
 
-# Xcode (future GUI app)
+# Xcode
 *.xcodeproj/
 *.xcworkspace/
 xcuserdata/
@@ -15,5 +16,8 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Generated icon intermediate files (source: assets/icon.jpeg → Resources/AppIcon.icns)
+assets/AppIcon.iconset/
 
 /graphify-out
