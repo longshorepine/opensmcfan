@@ -24,15 +24,17 @@ public final class ProfileStore {
         self.decoder.dateDecodingStrategy = .iso8601
     }
 
-    /// Ensure the profiles directory exists.
+    /// Ensure the profiles directory exists, owned by the console user.
     public func ensureDirectory() throws {
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
         )
+        chownToConsoleUser(directory.path)
     }
 
-    /// Save a profile to disk.
+    /// Save a profile to disk, owned by the console user so the user
+    /// can manage files even though the app runs as root.
     public func save(_ profile: Profile) throws {
         try ensureDirectory()
         let url = directory.appendingPathComponent("\(profile.id).json")
@@ -40,6 +42,17 @@ public final class ProfileStore {
         p.modified = Date()
         let data = try encoder.encode(p)
         try data.write(to: url, options: .atomic)
+        chownToConsoleUser(url.path)
+    }
+
+    /// Transfer ownership of a path to the logged-in console user.
+    /// No-op if the console user can't be determined or we're not root.
+    private func chownToConsoleUser(_ path: String) {
+        guard geteuid() == 0 else { return }
+        // stat /dev/console gives the UID of whoever is at the keyboard.
+        var st = stat()
+        guard stat("/dev/console", &st) == 0 else { return }
+        lchown(path, st.st_uid, st.st_gid)
     }
 
     /// Load a profile by ID.
