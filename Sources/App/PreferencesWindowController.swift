@@ -28,8 +28,8 @@ protocol PreferencesDelegate: AnyObject {
 
 // MARK: - Preferences Window Controller
 
-/// Two-tab preferences window: Monitor (telemetry) and Profiles (customization).
-final class PreferencesWindowController: NSWindowController {
+/// Three-tab preferences window: General, Monitor, Profiles.
+final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
     weak var prefsDelegate: PreferencesDelegate?
 
     private let tabView = NSTabView()
@@ -139,7 +139,9 @@ final class PreferencesWindowController: NSWindowController {
             tabView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
         ])
 
-        // General tab
+        tabView.delegate = self
+
+        // General tab (default — opens here every time)
         let generalTab = NSTabViewItem(identifier: "general")
         generalTab.label = "General"
         generalTab.view = buildGeneralTab()
@@ -151,9 +153,13 @@ final class PreferencesWindowController: NSWindowController {
         monitorTab.view = buildMonitorTab()
         tabView.addTabViewItem(monitorTab)
 
-        // Profiles tab — frozen for v1.1 (editor is incomplete; profile
-        // switching still works from the menu bar)
-        // tabView.addTabViewItem({ ... }())
+        // Profiles tab
+        let profilesTab = NSTabViewItem(identifier: "profiles")
+        profilesTab.label = "Profiles"
+        profilesTab.view = buildProfilesTab()
+        tabView.addTabViewItem(profilesTab)
+
+        tabView.selectTabViewItem(generalTab)
     }
 
     // MARK: - General Tab
@@ -187,6 +193,14 @@ final class PreferencesWindowController: NSWindowController {
         stack.addArrangedSubview(hint)
 
         return container
+    }
+
+    // MARK: - NSTabViewDelegate
+
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        if tabViewItem?.identifier as? String == "profiles" {
+            refreshControls()
+        }
     }
 
     @objc private func autoLoginToggled(_ sender: NSButton) {
@@ -265,12 +279,15 @@ final class PreferencesWindowController: NSWindowController {
         profilesScroll.documentView = profilesStack
         container.addSubview(profilesScroll)
 
+        // Constrain stack width to the clip view (contentView), not the scroll
+        // view itself — using scrollView.widthAnchor produces a 0-width stack
+        // on the first layout pass because the documentView sits inside NSClipView.
         NSLayoutConstraint.activate([
             profilesScroll.topAnchor.constraint(equalTo: container.topAnchor),
             profilesScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             profilesScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             profilesScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            profilesStack.widthAnchor.constraint(equalTo: profilesScroll.widthAnchor),
+            profilesStack.widthAnchor.constraint(equalTo: profilesScroll.contentView.widthAnchor),
         ])
 
         // Profile selector row
