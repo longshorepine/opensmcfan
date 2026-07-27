@@ -28,58 +28,53 @@ protocol PreferencesDelegate: AnyObject {
 
 // MARK: - Preferences Window Controller
 
-/// Three-tab preferences window: General, Monitor, Profiles.
-final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
+/// Single-view dashboard: fans (left), scrollable sensors (right), MFC-style.
+final class PreferencesWindowController: NSWindowController {
     weak var prefsDelegate: PreferencesDelegate?
 
-    private let tabView = NSTabView()
-
-    // Monitor tab
-    private let monitorStack = NSStackView()
-    private let monitorScroll = NSScrollView()   // kept for compatibility, not used in layout
-    private var tempValueLabels: [String: NSTextField] = [:]
-    private var tempKeyLabels: [String: NSTextField] = [:]
-    private var hottestKey: String = ""
-    private var fanActualLabels: [Int: NSTextField] = [:]
-    private var fanBars: [Int: NSProgressIndicator] = [:]
-    private var fanDetailLabels: [Int: NSTextField] = [:]
-    private var currentSensorKeys: [String] = []
-    private var currentFanCount: Int = -1
-
-    // Profiles tab
-    private let profilesStack = NSStackView()
-    private let profilesScroll = NSScrollView()
+    // Profile controls
     private var profilePopup: NSPopUpButton?
-    private var fanModePopups: [Int: NSPopUpButton] = [:]
-    private var fanFixedSliders: [Int: NSSlider] = [:]
-    private var fanFixedLabels: [Int: NSTextField] = [:]
-    private var fanCurveEditors: [Int: FanCurveEditorView] = [:]
-    private var fanSensorPopups: [Int: NSPopUpButton] = [:]
-    private var fanConfigStacks: [Int: NSStackView] = [:]
-    private var fanPointsLabels: [Int: NSTextField] = [:]
-    private var hysteresisSlider: NSSlider?
-    private var rampRateSlider: NSSlider?
-    private var responseDelaySlider: NSSlider?
-    private var hysteresisLabel: NSTextField?
-    private var rampRateLabel: NSTextField?
-    private var responseDelayLabel: NSTextField?
-    private var curveParamsStack: NSStackView?
-    private var selectedFanForCurve: Int = 0
     private var saveButton: NSButton?
     private var deleteButton: NSButton?
+
+    // Fan column (left)
+    private let fanColumn = NSStackView()
+    private var fanRangeLabels: [Int: NSTextField] = [:]
+    private var fanSegments: [Int: NSSegmentedControl] = [:]
+
+    // Sensor column (right, scrollable)
+    private let sensorStack = NSStackView()
+    private let sensorScroll = NSScrollView()
+    private var tempValueLabels: [String: NSTextField] = [:]
+    private var tempNameLabels: [String: NSTextField] = [:]
+    private var hottestKey: String = ""
+
+    // Update tracking
+    private var currentSensorKeys: [String] = []
+    private var currentFanCount: Int = -1
+    private var lastFans: [Fan] = []
+
+    // Custom fan dialog controls (active during modal)
+    private var dialogRPMRadio: NSButton?
+    private var dialogSensorRadio: NSButton?
+    private var dialogRPMSlider: NSSlider?
+    private var dialogRPMLabel: NSTextField?
+    private var dialogSensorPopup: NSPopUpButton?
+    private var dialogMinTempField: NSTextField?
+    private var dialogMaxTempField: NSTextField?
 
     // MARK: - Init
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "MySMC Preferences"
+        window.title = "MySMC"
         window.center()
-        window.minSize = NSSize(width: 560, height: 420)
+        window.minSize = NSSize(width: 560, height: 340)
         window.isReleasedWhenClosed = false
 
         self.init(window: window)
@@ -88,190 +83,119 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
 
     // MARK: - Public API
 
-    /// Called on each engine tick with fresh sensor data.
     func update(temps: [TemperatureReading], fans: [Fan]) {
         guard window?.isVisible == true else { return }
 
+        lastFans = fans
         let sensorKeys = temps.map(\.key)
         let fanCount = fans.count
 
-        if sensorKeys != currentSensorKeys || fanCount != currentFanCount {
-            rebuildMonitorTab(temps: temps, fans: fans)
-            currentSensorKeys = sensorKeys
+        if fanCount != currentFanCount {
+            rebuildFanColumn(fans: fans)
             currentFanCount = fanCount
-        } else {
-            updateMonitorValues(temps: temps, fans: fans)
         }
 
-        // Update live crosshairs in curve editors
-        let hottestTemp = temps.map(\.celsius).max()
-        for (fanIndex, editor) in fanCurveEditors {
-            // Use reference sensor if set, else hottest
-            if let sensorKey = prefsDelegate?.fanReferenceSensor(for: fanIndex),
-               let reading = temps.first(where: { $0.key == sensorKey }) {
-                editor.liveTemperature = reading.celsius
-            } else {
-                editor.liveTemperature = hottestTemp
-            }
-            let fan = fans.first(where: { $0.index == fanIndex })
-            editor.liveRPM = fan?.actual
+        if sensorKeys != currentSensorKeys {
+            rebuildSensorColumn(temps: temps)
+            currentSensorKeys = sensorKeys
         }
+
+        updateValues(temps: temps, fans: fans)
     }
 
-    /// Refresh all profile-related controls after an external profile switch.
     func refreshControls() {
         refreshProfilePopup()
-        rebuildFanConfigs()
+        // Force fan column rebuild on next update to reflect mode changes
+        currentFanCount = -1
     }
 
     // MARK: - Build UI
 
     private func buildUI() {
-        guard let contentView = window?.contentView else { return }
+        guard let cv = window?.contentView else { return }
 
-        tabView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(tabView)
+        let profileRow = buildProfileRow()
+        cv.addSubview(profileRow)
 
-        NSLayoutConstraint.activate([
-            tabView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-            tabView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
-            tabView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
-            tabView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
-        ])
+        let topDiv = makeDivider()
+        cv.addSubview(topDiv)
 
-        tabView.delegate = self
+        // Fan column (left)
+        fanColumn.orientation = .vertical
+        fanColumn.alignment = .leading
+        fanColumn.spacing = 6
+        fanColumn.translatesAutoresizingMaskIntoConstraints = false
+        cv.addSubview(fanColumn)
 
-        // General tab (default — opens here every time)
-        let generalTab = NSTabViewItem(identifier: "general")
-        generalTab.label = "General"
-        generalTab.view = buildGeneralTab()
-        tabView.addTabViewItem(generalTab)
+        // Sensor scroll (right)
+        sensorScroll.translatesAutoresizingMaskIntoConstraints = false
+        sensorScroll.hasVerticalScroller = true
+        sensorScroll.hasHorizontalScroller = false
+        sensorScroll.drawsBackground = false
+        sensorScroll.borderType = .noBorder
+        sensorScroll.autohidesScrollers = true
 
-        // Monitor tab
-        let monitorTab = NSTabViewItem(identifier: "monitor")
-        monitorTab.label = "Monitor"
-        monitorTab.view = buildMonitorTab()
-        tabView.addTabViewItem(monitorTab)
+        sensorStack.orientation = .vertical
+        sensorStack.alignment = .leading
+        sensorStack.spacing = 2
+        sensorStack.translatesAutoresizingMaskIntoConstraints = false
 
-        // Profiles tab
-        let profilesTab = NSTabViewItem(identifier: "profiles")
-        profilesTab.label = "Profiles"
-        profilesTab.view = buildProfilesTab()
-        tabView.addTabViewItem(profilesTab)
+        sensorScroll.documentView = sensorStack
+        sensorStack.widthAnchor.constraint(equalTo: sensorScroll.contentView.widthAnchor).isActive = true
+        cv.addSubview(sensorScroll)
 
-        tabView.selectTabViewItem(generalTab)
-    }
+        let bottomDiv = makeDivider()
+        cv.addSubview(bottomDiv)
 
-    // MARK: - General Tab
-
-    private func buildGeneralTab() -> NSView {
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 16
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-        ])
-
-        // Start at Login toggle
-        let toggle = NSButton(checkboxWithTitle: "Start at Login", target: self,
-                              action: #selector(autoLoginToggled(_:)))
-        toggle.state = LaunchAgentManager.shared.isInstalled ? .on : .off
-        stack.addArrangedSubview(toggle)
-
-        let hint = NSTextField(labelWithString: "MySMC will launch automatically as root when you log in,\nkeeping your fan settings active without any extra steps.")
-        hint.font = NSFont.systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
-        hint.isSelectable = false
-        stack.addArrangedSubview(hint)
-
-        return container
-    }
-
-    // MARK: - NSTabViewDelegate
-
-    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
-        if tabViewItem?.identifier as? String == "profiles" {
-            refreshControls()
-        }
-    }
-
-    @objc private func autoLoginToggled(_ sender: NSButton) {
-        if sender.state == .on {
-            do {
-                try LaunchAgentManager.shared.install()
-            } catch {
-                sender.state = .off
-                let alert = NSAlert()
-                alert.messageText = "Could not enable auto-start"
-                alert.informativeText = error.localizedDescription
-                alert.alertStyle = .warning
-                alert.runModal()
-            }
-        } else {
-            LaunchAgentManager.shared.uninstall()
-        }
-    }
-
-    // MARK: - Monitor Tab
-
-    private func buildMonitorTab() -> NSView {
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        monitorStack.orientation = .vertical
-        monitorStack.alignment = .leading
-        monitorStack.spacing = 4
-        monitorStack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(monitorStack)
+        let bottomRow = buildBottomRow()
+        cv.addSubview(bottomRow)
 
         NSLayoutConstraint.activate([
-            monitorStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            monitorStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            monitorStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            profileRow.topAnchor.constraint(equalTo: cv.topAnchor, constant: 12),
+            profileRow.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 16),
+            profileRow.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -16),
+
+            topDiv.topAnchor.constraint(equalTo: profileRow.bottomAnchor, constant: 8),
+            topDiv.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 16),
+            topDiv.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -16),
+
+            fanColumn.topAnchor.constraint(equalTo: topDiv.bottomAnchor, constant: 8),
+            fanColumn.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 16),
+            fanColumn.widthAnchor.constraint(equalTo: cv.widthAnchor, multiplier: 0.45, constant: -24),
+
+            sensorScroll.topAnchor.constraint(equalTo: topDiv.bottomAnchor, constant: 8),
+            sensorScroll.leadingAnchor.constraint(equalTo: fanColumn.trailingAnchor, constant: 20),
+            sensorScroll.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -16),
+            sensorScroll.bottomAnchor.constraint(equalTo: bottomDiv.topAnchor, constant: -8),
+
+            bottomDiv.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 16),
+            bottomDiv.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -16),
+
+            bottomRow.topAnchor.constraint(equalTo: bottomDiv.bottomAnchor, constant: 8),
+            bottomRow.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -16),
+            bottomRow.bottomAnchor.constraint(equalTo: cv.bottomAnchor, constant: -12),
         ])
 
-        let placeholder = makeLabel("Waiting for sensor data\u{2026}",
-                                    font: .systemFont(ofSize: 12),
-                                    color: .secondaryLabelColor)
-        monitorStack.addArrangedSubview(placeholder)
-
-        return container
+        // Placeholders
+        fanColumn.addArrangedSubview(makeSectionHeader("Fans"))
+        fanColumn.addArrangedSubview(makeLabel("Waiting for data\u{2026}",
+                                               font: .systemFont(ofSize: 12),
+                                               color: .secondaryLabelColor))
+        sensorStack.addArrangedSubview(makeSectionHeader("Temperature Sensors"))
+        sensorStack.addArrangedSubview(makeLabel("Waiting for data\u{2026}",
+                                                  font: .systemFont(ofSize: 12),
+                                                  color: .secondaryLabelColor))
     }
 
-    // MARK: - Profiles Tab
+    private func buildProfileRow() -> NSView {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
 
-    private func buildProfilesTab() -> NSView {
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        profilesStack.orientation = .vertical
-        profilesStack.alignment = .leading
-        profilesStack.spacing = 8
-        profilesStack.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(profilesStack)
-
-        NSLayoutConstraint.activate([
-            profilesStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            profilesStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            profilesStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
-        ])
-
-        // Profile selector row
-        let profileRow = NSStackView()
-        profileRow.orientation = .horizontal
-        profileRow.alignment = .centerY
-        profileRow.spacing = 8
-        profileRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let profileLabel = makeLabel("Active Profile:", font: .systemFont(ofSize: 12, weight: .medium))
+        let label = makeLabel("Active preset:", font: .systemFont(ofSize: 12, weight: .medium))
+        label.setContentHuggingPriority(.required, for: .horizontal)
 
         let popup = NSPopUpButton()
         popup.translatesAutoresizingMaskIntoConstraints = false
@@ -281,86 +205,85 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         popup.action = #selector(profileChanged(_:))
         profilePopup = popup
 
-        profileRow.addArrangedSubview(profileLabel)
-        profileRow.addArrangedSubview(popup)
-        profileLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        profilesStack.addArrangedSubview(profileRow)
-
-        // Profile management buttons
-        let buttonRow = NSStackView()
-        buttonRow.orientation = .horizontal
-        buttonRow.alignment = .centerY
-        buttonRow.spacing = 8
-        buttonRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let newBtn = NSButton(title: "New\u{2026}", target: self, action: #selector(newProfile))
-        newBtn.bezelStyle = .rounded
-        newBtn.controlSize = .small
-        newBtn.font = .systemFont(ofSize: 11)
-
-        let dupBtn = NSButton(title: "Duplicate", target: self, action: #selector(duplicateProfile))
-        dupBtn.bezelStyle = .rounded
-        dupBtn.controlSize = .small
-        dupBtn.font = .systemFont(ofSize: 11)
-
-        let saveBtn = NSButton(title: "Save", target: self, action: #selector(saveProfile))
-        saveBtn.bezelStyle = .rounded
-        saveBtn.controlSize = .small
-        saveBtn.font = .systemFont(ofSize: 11)
+        let newBtn = makeSmallButton("New\u{2026}", action: #selector(newProfile))
+        let dupBtn = makeSmallButton("Duplicate", action: #selector(duplicateProfile))
+        let saveBtn = makeSmallButton("Save", action: #selector(saveProfile))
         saveButton = saveBtn
-
-        let delBtn = NSButton(title: "Delete", target: self, action: #selector(deleteProfile))
-        delBtn.bezelStyle = .rounded
-        delBtn.controlSize = .small
-        delBtn.font = .systemFont(ofSize: 11)
+        let delBtn = makeSmallButton("Delete", action: #selector(deleteProfile))
         deleteButton = delBtn
 
-        buttonRow.addArrangedSubview(newBtn)
-        buttonRow.addArrangedSubview(dupBtn)
-        buttonRow.addArrangedSubview(saveBtn)
-        buttonRow.addArrangedSubview(delBtn)
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(popup)
+        row.addArrangedSubview(newBtn)
+        row.addArrangedSubview(dupBtn)
+        row.addArrangedSubview(saveBtn)
+        row.addArrangedSubview(delBtn)
 
-        profilesStack.addArrangedSubview(buttonRow)
-        profilesStack.addArrangedSubview(makeDivider())
-
-        // Popup and fan configs are populated by refreshControls()
-        // when the window is opened (prefsDelegate is nil at init time)
-
-        return container
+        return row
     }
 
-    private func refreshProfilePopup() {
-        guard let popup = profilePopup, let delegate = prefsDelegate else { return }
+    private func buildBottomRow() -> NSView {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
 
-        popup.removeAllItems()
-        let profiles = delegate.availableProfiles()
-        let activeId = delegate.activeProfileId()
-        for (i, profile) in profiles.enumerated() {
-            popup.addItem(withTitle: profile.name)
-            if profile.id == activeId {
-                popup.selectItem(at: i)
-            }
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let prefsBtn = NSButton(title: "Preferences\u{2026}", target: self,
+                                action: #selector(showPreferencesDialog))
+        prefsBtn.bezelStyle = .rounded
+        prefsBtn.controlSize = .regular
+        prefsBtn.font = .systemFont(ofSize: 12)
+
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(prefsBtn)
+
+        return row
+    }
+
+    // MARK: - Rebuild Fan Column
+
+    private func rebuildFanColumn(fans: [Fan]) {
+        fanColumn.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        fanRangeLabels.removeAll()
+        fanSegments.removeAll()
+
+        // Column headers matching MFC table style
+        let header = makeFanColumnHeader()
+        fanColumn.addArrangedSubview(header)
+        header.widthAnchor.constraint(equalTo: fanColumn.widthAnchor).isActive = true
+        fanColumn.addArrangedSubview(makeDivider())
+
+        for fan in fans {
+            let fanView = makeFanView(fan: fan)
+            fanColumn.addArrangedSubview(fanView)
+            fanView.widthAnchor.constraint(equalTo: fanColumn.widthAnchor).isActive = true
         }
 
-        // Enable/disable delete based on whether profile is built-in
-        let isBuiltIn = delegate.isProfileBuiltIn(id: activeId)
-        deleteButton?.isEnabled = !isBuiltIn
+        if fans.isEmpty {
+            fanColumn.addArrangedSubview(makeLabel("No fans detected",
+                                                    font: .systemFont(ofSize: 12),
+                                                    color: .secondaryLabelColor))
+        }
     }
 
-    // MARK: - Rebuild Monitor Tab
+    // MARK: - Rebuild Sensor Column
 
-    private func rebuildMonitorTab(temps: [TemperatureReading], fans: [Fan]) {
-        monitorStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    private func rebuildSensorColumn(temps: [TemperatureReading]) {
+        sensorStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         tempValueLabels.removeAll()
-        tempKeyLabels.removeAll()
-        fanActualLabels.removeAll()
-        fanBars.removeAll()
-        fanDetailLabels.removeAll()
+        tempNameLabels.removeAll()
 
-        // Temperatures
-        monitorStack.addArrangedSubview(makeSectionHeader("Temperatures"))
-        monitorStack.addArrangedSubview(makeSpacer(4))
+        sensorStack.addArrangedSubview(makeSectionHeader("Temperature Sensors"))
+
+        let colHeader = makeColumnHeader(left: "Sensor", right: "Value \u{00B0}C")
+        sensorStack.addArrangedSubview(colHeader)
+        colHeader.widthAnchor.constraint(equalTo: sensorStack.widthAnchor).isActive = true
+        sensorStack.addArrangedSubview(makeDivider())
 
         let hottestReading = temps.max(by: { $0.celsius < $1.celsius })
         hottestKey = hottestReading?.key ?? ""
@@ -371,346 +294,61 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
             }
             guard !groupTemps.isEmpty else { continue }
 
-            let header = makeLabel(group.rawValue, font: .systemFont(ofSize: 11, weight: .medium),
-                                   color: .secondaryLabelColor)
-            monitorStack.addArrangedSubview(header)
+            let header = makeLabel(group.rawValue,
+                                   font: .systemFont(ofSize: 11, weight: .medium),
+                                   color: .tertiaryLabelColor)
+            sensorStack.addArrangedSubview(header)
 
             for reading in groupTemps {
-                let row = makeTempRow(reading: reading, isHottest: reading.key == hottestKey)
-                monitorStack.addArrangedSubview(row)
+                let row = makeSensorRow(reading: reading, isHottest: reading.key == hottestKey)
+                sensorStack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: sensorStack.widthAnchor).isActive = true
             }
-            monitorStack.addArrangedSubview(makeSpacer(4))
-        }
-
-        // Fans
-        monitorStack.addArrangedSubview(makeDivider())
-        monitorStack.addArrangedSubview(makeSpacer(4))
-        monitorStack.addArrangedSubview(makeSectionHeader("Fans"))
-        monitorStack.addArrangedSubview(makeSpacer(4))
-
-        for fan in fans {
-            let fanView = makeFanMonitorView(fan: fan)
-            monitorStack.addArrangedSubview(fanView)
-            monitorStack.addArrangedSubview(makeSpacer(4))
+            sensorStack.addArrangedSubview(makeSpacer(2))
         }
     }
 
-    private func updateMonitorValues(temps: [TemperatureReading], fans: [Fan]) {
+    // MARK: - Update Values
+
+    private func updateValues(temps: [TemperatureReading], fans: [Fan]) {
         let hottestReading = temps.max(by: { $0.celsius < $1.celsius })
         let newHottestKey = hottestReading?.key ?? ""
 
         for reading in temps {
-            if let label = tempValueLabels[reading.key] {
-                label.stringValue = String(format: "%.0f\u{00B0}C", reading.celsius)
-                label.textColor = tempColor(for: reading.celsius)
-            }
-            if let keyLabel = tempKeyLabels[reading.key] {
+            tempValueLabels[reading.key]?.stringValue = String(format: "%.0f", reading.celsius)
+            tempValueLabels[reading.key]?.textColor = tempColor(for: reading.celsius)
+
+            if let nameLabel = tempNameLabels[reading.key] {
                 let isHottest = reading.key == newHottestKey
                 let wasHottest = reading.key == hottestKey
                 if isHottest != wasHottest {
-                    keyLabel.textColor = isHottest ? .systemOrange : .tertiaryLabelColor
+                    nameLabel.textColor = isHottest ? .systemOrange : .labelColor
                 }
             }
         }
         hottestKey = newHottestKey
 
         for fan in fans {
-            if let label = fanActualLabels[fan.index] {
-                let rpmStr = fan.actual.map { String(format: "%.0f", $0) } ?? "--"
-                label.stringValue = "\(rpmStr) RPM"
-            }
-            if let bar = fanBars[fan.index] {
-                bar.minValue = fan.minimum ?? 0
-                bar.maxValue = fan.maximum ?? 6500
-                bar.doubleValue = fan.actual ?? 0
-            }
-            if let detail = fanDetailLabels[fan.index] {
-                let target = fan.target.map { String(format: "%.0f", $0) } ?? "--"
-                let min = fan.minimum.map { String(format: "%.0f", $0) } ?? "--"
-                let max = fan.maximum.map { String(format: "%.0f", $0) } ?? "--"
-                detail.stringValue = "Target: \(target)  Min: \(min)  Max: \(max)"
-            }
+            fanRangeLabels[fan.index]?.attributedStringValue = makeRPMRangeString(
+                min: fan.minimum, actual: fan.actual, max: fan.maximum)
         }
     }
 
-    // MARK: - Rebuild Fan Configs (Profiles Tab)
+    // MARK: - Profile Actions
 
-    private func rebuildFanConfigs() {
-        // Remove existing fan config views (everything after profile row + buttons + divider)
-        let existingFanViews = profilesStack.arrangedSubviews
-        if existingFanViews.count > 3 {
-            for view in existingFanViews[3...] {
-                view.removeFromSuperview()
-            }
+    private func refreshProfilePopup() {
+        guard let popup = profilePopup, let delegate = prefsDelegate else { return }
+
+        popup.removeAllItems()
+        let profiles = delegate.availableProfiles()
+        let activeId = delegate.activeProfileId()
+        for (i, profile) in profiles.enumerated() {
+            popup.addItem(withTitle: profile.name)
+            if profile.id == activeId { popup.selectItem(at: i) }
         }
 
-        fanModePopups.removeAll()
-        fanFixedSliders.removeAll()
-        fanFixedLabels.removeAll()
-        fanCurveEditors.removeAll()
-        fanSensorPopups.removeAll()
-        fanConfigStacks.removeAll()
-        fanPointsLabels.removeAll()
-
-        guard let delegate = prefsDelegate else { return }
-        let numFans = delegate.fanCount()
-
-        for i in 0..<numFans {
-            let fanSection = buildFanConfigSection(fanIndex: i)
-            profilesStack.addArrangedSubview(fanSection)
-
-            if i < numFans - 1 {
-                profilesStack.addArrangedSubview(makeDivider())
-            }
-        }
-
-        // Curve parameters section
-        profilesStack.addArrangedSubview(makeDivider())
-        let paramsSection = buildCurveParamsSection()
-        profilesStack.addArrangedSubview(paramsSection)
+        deleteButton?.isEnabled = !delegate.isProfileBuiltIn(id: activeId)
     }
-
-    private func buildFanConfigSection(fanIndex: Int) -> NSView {
-        guard let delegate = prefsDelegate else { return NSView() }
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        // Fan header
-        let header = makeLabel("Fan \(fanIndex)", font: .systemFont(ofSize: 13, weight: .semibold))
-        stack.addArrangedSubview(header)
-
-        // Mode selector
-        let modeRow = NSStackView()
-        modeRow.orientation = .horizontal
-        modeRow.alignment = .centerY
-        modeRow.spacing = 8
-        modeRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let modeLabel = makeLabel("Mode:", font: .systemFont(ofSize: 12))
-        let modePopup = NSPopUpButton()
-        modePopup.translatesAutoresizingMaskIntoConstraints = false
-        modePopup.controlSize = .regular
-        modePopup.font = .systemFont(ofSize: 12)
-        modePopup.tag = fanIndex
-        modePopup.target = self
-        modePopup.action = #selector(fanModeChanged(_:))
-        modePopup.addItems(withTitles: ["Auto", "Fixed RPM", "Custom Curve"])
-
-        let currentMode = delegate.fanMode(for: fanIndex)
-        switch currentMode {
-        case .auto:  modePopup.selectItem(at: 0)
-        case .fixed: modePopup.selectItem(at: 1)
-        case .curve: modePopup.selectItem(at: 2)
-        }
-        fanModePopups[fanIndex] = modePopup
-
-        modeRow.addArrangedSubview(modeLabel)
-        modeRow.addArrangedSubview(modePopup)
-        stack.addArrangedSubview(modeRow)
-
-        // Conditional config views
-        let configStack = NSStackView()
-        configStack.orientation = .vertical
-        configStack.alignment = .leading
-        configStack.spacing = 6
-        configStack.translatesAutoresizingMaskIntoConstraints = false
-        fanConfigStacks[fanIndex] = configStack
-
-        buildFanConfigDetails(fanIndex: fanIndex, mode: currentMode, into: configStack)
-        stack.addArrangedSubview(configStack)
-
-        return stack
-    }
-
-    private func buildFanConfigDetails(fanIndex: Int, mode: FanMode, into stack: NSStackView) {
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard let delegate = prefsDelegate else { return }
-
-        switch mode {
-        case .auto:
-            let note = makeLabel("Fan controlled by SMC firmware.",
-                                 font: .systemFont(ofSize: 11),
-                                 color: .secondaryLabelColor)
-            stack.addArrangedSubview(note)
-
-        case .fixed:
-            let sliderRow = NSStackView()
-            sliderRow.orientation = .horizontal
-            sliderRow.alignment = .centerY
-            sliderRow.spacing = 8
-            sliderRow.translatesAutoresizingMaskIntoConstraints = false
-
-            let min = delegate.fanMinRPM(for: fanIndex)
-            let max = delegate.fanMaxRPM(for: fanIndex)
-            let current = delegate.fanTargetRPM(for: fanIndex) ?? min
-
-            let slider = NSSlider(value: current, minValue: min, maxValue: max,
-                                  target: self, action: #selector(fanRPMChanged(_:)))
-            slider.translatesAutoresizingMaskIntoConstraints = false
-            slider.controlSize = .regular
-            slider.tag = fanIndex
-            slider.isContinuous = true
-            slider.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
-            fanFixedSliders[fanIndex] = slider
-
-            let valueLabel = makeLabel(
-                String(format: "%.0f RPM", current),
-                font: .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-            )
-            valueLabel.widthAnchor.constraint(equalToConstant: 70).isActive = true
-            valueLabel.alignment = .right
-            fanFixedLabels[fanIndex] = valueLabel
-
-            sliderRow.addArrangedSubview(slider)
-            sliderRow.addArrangedSubview(valueLabel)
-            stack.addArrangedSubview(sliderRow)
-
-        case .curve:
-            // Reference sensor selector
-            let sensorRow = NSStackView()
-            sensorRow.orientation = .horizontal
-            sensorRow.alignment = .centerY
-            sensorRow.spacing = 8
-            sensorRow.translatesAutoresizingMaskIntoConstraints = false
-
-            let sensorLabel = makeLabel("Reference Sensor:", font: .systemFont(ofSize: 12))
-            let sensorPopup = NSPopUpButton()
-            sensorPopup.translatesAutoresizingMaskIntoConstraints = false
-            sensorPopup.controlSize = .regular
-            sensorPopup.font = .systemFont(ofSize: 12)
-            sensorPopup.tag = fanIndex
-            sensorPopup.target = self
-            sensorPopup.action = #selector(sensorChanged(_:))
-
-            sensorPopup.addItem(withTitle: "Hottest Sensor")
-            for sensor in knownSensors {
-                sensorPopup.addItem(withTitle: "\(sensor.label) (\(sensor.key))")
-            }
-
-            let currentSensor = delegate.fanReferenceSensor(for: fanIndex)
-            if let key = currentSensor,
-               let idx = knownSensors.firstIndex(where: { $0.key == key }) {
-                sensorPopup.selectItem(at: idx + 1) // +1 for "Hottest Sensor"
-            } else {
-                sensorPopup.selectItem(at: 0)
-            }
-            fanSensorPopups[fanIndex] = sensorPopup
-
-            sensorRow.addArrangedSubview(sensorLabel)
-            sensorRow.addArrangedSubview(sensorPopup)
-            stack.addArrangedSubview(sensorRow)
-
-            // Curve editor
-            let editor = FanCurveEditorView()
-            editor.translatesAutoresizingMaskIntoConstraints = false
-            editor.delegate = self
-            editor.minRPM = delegate.fanMinRPM(for: fanIndex)
-            editor.maxRPM = delegate.fanMaxRPM(for: fanIndex)
-
-            if let existingCurve = delegate.fanCurve(for: fanIndex) {
-                editor.curve = existingCurve
-            } else {
-                editor.curve = .balanced(minRPM: delegate.fanMinRPM(for: fanIndex),
-                                         maxRPM: delegate.fanMaxRPM(for: fanIndex))
-            }
-
-            editor.fanIndex = fanIndex
-            fanCurveEditors[fanIndex] = editor
-
-            NSLayoutConstraint.activate([
-                editor.widthAnchor.constraint(greaterThanOrEqualToConstant: 400),
-                editor.heightAnchor.constraint(equalToConstant: 200),
-            ])
-
-            stack.addArrangedSubview(editor)
-
-            // Control point list
-            let pointsLabel = makeLabel(
-                curvePointsSummary(editor.curve),
-                font: .monospacedDigitSystemFont(ofSize: 10, weight: .regular),
-                color: .secondaryLabelColor
-            )
-            fanPointsLabels[fanIndex] = pointsLabel
-            stack.addArrangedSubview(pointsLabel)
-
-            let hint = makeLabel(
-                "Double-click to add point \u{2022} Right-click to remove \u{2022} Drag to adjust",
-                font: .systemFont(ofSize: 10),
-                color: .tertiaryLabelColor
-            )
-            stack.addArrangedSubview(hint)
-
-            selectedFanForCurve = fanIndex
-        }
-    }
-
-    private func buildCurveParamsSection() -> NSView {
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        curveParamsStack = stack
-
-        let header = makeSectionHeader("Curve Parameters")
-        stack.addArrangedSubview(header)
-
-        let note = makeLabel("Applied to all fans in Curve mode.",
-                             font: .systemFont(ofSize: 10),
-                             color: .tertiaryLabelColor)
-        stack.addArrangedSubview(note)
-
-        // Get current values from first fan's curve, or defaults
-        var hyst: Double = 3.0
-        var ramp: Double = 500.0
-        var delay: Double = 2.0
-
-        if let delegate = prefsDelegate {
-            for i in 0..<delegate.fanCount() {
-                if let curve = delegate.fanCurve(for: i) {
-                    hyst = curve.hysteresis
-                    ramp = curve.rampRate
-                    delay = curve.responseDelay
-                    break
-                }
-            }
-        }
-
-        // Hysteresis
-        let (hystRow, hystSlider, hystLabel) = makeSliderRow(
-            label: "Hysteresis:", min: 0, max: 10, value: hyst,
-            format: "%.1f\u{00B0}C", action: #selector(curveParamChanged(_:)), tag: 100
-        )
-        hysteresisSlider = hystSlider
-        hysteresisLabel = hystLabel
-        stack.addArrangedSubview(hystRow)
-
-        // Ramp rate
-        let (rampRow, rampSlider_, rampLabel_) = makeSliderRow(
-            label: "Ramp Rate:", min: 100, max: 2000, value: ramp,
-            format: "%.0f RPM/s", action: #selector(curveParamChanged(_:)), tag: 101
-        )
-        rampRateSlider = rampSlider_
-        rampRateLabel = rampLabel_
-        stack.addArrangedSubview(rampRow)
-
-        // Response delay
-        let (delayRow, delaySlider_, delayLabel_) = makeSliderRow(
-            label: "Response Delay:", min: 0, max: 10, value: delay,
-            format: "%.1f s", action: #selector(curveParamChanged(_:)), tag: 102
-        )
-        responseDelaySlider = delaySlider_
-        responseDelayLabel = delayLabel_
-        stack.addArrangedSubview(delayRow)
-
-        return stack
-    }
-
-    // MARK: - Actions
 
     @objc private func profileChanged(_ sender: NSPopUpButton) {
         guard let delegate = prefsDelegate else { return }
@@ -719,7 +357,7 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         guard idx >= 0 && idx < profiles.count else { return }
         delegate.preferencesDidSelectProfile(id: profiles[idx].id)
         refreshProfilePopup()
-        rebuildFanConfigs()
+        currentFanCount = -1  // force fan column rebuild
     }
 
     @objc private func newProfile() {
@@ -733,26 +371,23 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         input.stringValue = "My Profile"
         alert.accessoryView = input
 
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
+        if alert.runModal() == .alertFirstButtonReturn {
             let name = input.stringValue.trimmingCharacters(in: .whitespaces)
             guard !name.isEmpty else { return }
             prefsDelegate?.preferencesDidCreateProfile(name: name)
             refreshProfilePopup()
-            rebuildFanConfigs()
+            currentFanCount = -1
         }
     }
 
     @objc private func duplicateProfile() {
         prefsDelegate?.preferencesDidDuplicateProfile()
         refreshProfilePopup()
-        rebuildFanConfigs()
+        currentFanCount = -1
     }
 
     @objc private func saveProfile() {
         prefsDelegate?.preferencesDidSaveProfile()
-
-        // Brief visual feedback
         saveButton?.title = "Saved"
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.saveButton?.title = "Save"
@@ -775,200 +410,384 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         if alert.runModal() == .alertFirstButtonReturn {
             delegate.preferencesDidDeleteProfile(id: activeId)
             refreshProfilePopup()
-            rebuildFanConfigs()
+            currentFanCount = -1
         }
     }
 
-    @objc private func fanModeChanged(_ sender: NSPopUpButton) {
+    // MARK: - Fan Control Actions
+
+    @objc private func fanControlChanged(_ sender: NSSegmentedControl) {
         let fanIndex = sender.tag
-        let mode: FanMode
-        switch sender.indexOfSelectedItem {
-        case 0: mode = .auto
-        case 1: mode = .fixed
-        case 2: mode = .curve
-        default: mode = .auto
-        }
-
-        // Rebuild the config details for this fan
-        if let configStack = fanConfigStacks[fanIndex] {
-            buildFanConfigDetails(fanIndex: fanIndex, mode: mode, into: configStack)
-        }
-
-        prefsDelegate?.preferencesDidChangeFanMode(fanIndex: fanIndex, mode: mode)
-    }
-
-    @objc private func fanRPMChanged(_ sender: NSSlider) {
-        let fanIndex = sender.tag
-        let rpm = sender.doubleValue
-        fanFixedLabels[fanIndex]?.stringValue = String(format: "%.0f RPM", rpm)
-        prefsDelegate?.preferencesDidChangeFanRPM(fanIndex: fanIndex, rpm: rpm)
-    }
-
-    @objc private func sensorChanged(_ sender: NSPopUpButton) {
-        let fanIndex = sender.tag
-        let idx = sender.indexOfSelectedItem
-        let sensorKey: String?
-        if idx == 0 {
-            sensorKey = nil // "Hottest Sensor"
+        if sender.selectedSegment == 0 {
+            prefsDelegate?.preferencesDidChangeFanMode(fanIndex: fanIndex, mode: .auto)
         } else {
-            sensorKey = knownSensors[idx - 1].key
+            showCustomFanDialog(fanIndex: fanIndex)
         }
-        prefsDelegate?.preferencesDidChangeFanReferenceSensor(fanIndex: fanIndex, sensorKey: sensorKey)
     }
 
-    @objc private func curveParamChanged(_ sender: NSSlider) {
+    // MARK: - Custom Fan Dialog
+
+    /// Detected sensor list for the custom dialog popup (key, label pairs).
+    private var detectedSensors: [(key: String, label: String)] = []
+
+    private func showCustomFanDialog(fanIndex: Int) {
         guard let delegate = prefsDelegate else { return }
 
-        switch sender.tag {
-        case 100:
-            hysteresisLabel?.stringValue = String(format: "%.1f\u{00B0}C", sender.doubleValue)
-        case 101:
-            rampRateLabel?.stringValue = String(format: "%.0f RPM/s", sender.doubleValue)
-        case 102:
-            responseDelayLabel?.stringValue = String(format: "%.1f s", sender.doubleValue)
-        default: break
+        let fanLabel = lastFans.first(where: { $0.index == fanIndex })?.label ?? "Fan \(fanIndex)"
+        let minRPM = delegate.fanMinRPM(for: fanIndex)
+        let maxRPM = delegate.fanMaxRPM(for: fanIndex)
+        let currentMode = delegate.fanMode(for: fanIndex)
+        let currentRPM = delegate.fanTargetRPM(for: fanIndex) ?? minRPM
+
+        let currentSensor = delegate.fanReferenceSensor(for: fanIndex)
+        var currentMinTemp: Double = 40
+        var currentMaxTemp: Double = 90
+        if let curve = delegate.fanCurve(for: fanIndex), curve.points.count >= 2 {
+            currentMinTemp = curve.points.first!.temperature
+            currentMaxTemp = curve.points.last!.temperature
         }
 
-        // Apply to all fans in curve mode
-        for i in 0..<delegate.fanCount() {
-            guard delegate.fanMode(for: i) == .curve,
-                  var curve = delegate.fanCurve(for: i) ?? fanCurveEditors[i]?.curve else { continue }
+        // Build detected sensor list (only sensors present on this hardware)
+        detectedSensors = currentSensorKeys.compactMap { key in
+            guard let info = TemperatureMonitor.sensorInfo(for: key) else { return nil }
+            return (key: key, label: info.label)
+        }
+        if detectedSensors.isEmpty {
+            detectedSensors = knownSensors.map { (key: $0.key, label: $0.label) }
+        }
 
-            curve.hysteresis = hysteresisSlider?.doubleValue ?? curve.hysteresis
-            curve.rampRate = rampRateSlider?.doubleValue ?? curve.rampRate
-            curve.responseDelay = responseDelaySlider?.doubleValue ?? curve.responseDelay
+        let alert = NSAlert()
+        alert.messageText = "Change fan control for the '\(fanLabel)' fan"
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
 
-            delegate.preferencesDidChangeFanCurve(fanIndex: i, curve: curve)
+        // ── Build accessory view (frame-based container for reliable sizing) ──
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 170))
+
+        // Constant RPM row
+        let rpmRadio = NSButton(radioButtonWithTitle: "Constant RPM value",
+                                target: self, action: #selector(dialogModeToggled(_:)))
+        rpmRadio.tag = 0
+        rpmRadio.translatesAutoresizingMaskIntoConstraints = false
+        dialogRPMRadio = rpmRadio
+
+        let rpmSlider = NSSlider(value: currentRPM, minValue: minRPM, maxValue: maxRPM,
+                                 target: self, action: #selector(dialogRPMChanged(_:)))
+        rpmSlider.controlSize = .regular
+        rpmSlider.isContinuous = true
+        rpmSlider.translatesAutoresizingMaskIntoConstraints = false
+        dialogRPMSlider = rpmSlider
+
+        let rpmValueLabel = NSTextField(labelWithString: String(format: "%.0f", currentRPM))
+        rpmValueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+        rpmValueLabel.alignment = .right
+        rpmValueLabel.translatesAutoresizingMaskIntoConstraints = false
+        rpmValueLabel.isBordered = true
+        rpmValueLabel.drawsBackground = true
+        dialogRPMLabel = rpmValueLabel
+
+        container.addSubview(rpmRadio)
+        container.addSubview(rpmSlider)
+        container.addSubview(rpmValueLabel)
+
+        // Sensor-based row
+        let sensorRadio = NSButton(radioButtonWithTitle: "Sensor-based value",
+                                   target: self, action: #selector(dialogModeToggled(_:)))
+        sensorRadio.tag = 1
+        sensorRadio.translatesAutoresizingMaskIntoConstraints = false
+        dialogSensorRadio = sensorRadio
+
+        let sensorPopup = NSPopUpButton()
+        sensorPopup.translatesAutoresizingMaskIntoConstraints = false
+        sensorPopup.controlSize = .regular
+        sensorPopup.font = .systemFont(ofSize: 12)
+        for sensor in detectedSensors {
+            sensorPopup.addItem(withTitle: sensor.label)
+        }
+        if let key = currentSensor,
+           let idx = detectedSensors.firstIndex(where: { $0.key == key }) {
+            sensorPopup.selectItem(at: idx)
+        }
+        dialogSensorPopup = sensorPopup
+
+        container.addSubview(sensorRadio)
+        container.addSubview(sensorPopup)
+
+        // Min temp row
+        let minDescLabel = makeLabel("Temperature that the fan speed will\nstart to increase from:",
+                                     font: .systemFont(ofSize: 12))
+        container.addSubview(minDescLabel)
+
+        let minField = NSTextField(string: String(format: "%.0f", currentMinTemp))
+        minField.alignment = .right
+        minField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        minField.translatesAutoresizingMaskIntoConstraints = false
+        dialogMinTempField = minField
+        container.addSubview(minField)
+
+        let minUnit = makeLabel("\u{00B0}C", font: .systemFont(ofSize: 12))
+        container.addSubview(minUnit)
+
+        // Max temp row
+        let maxDescLabel = makeLabel("Maximum temperature:",
+                                     font: .systemFont(ofSize: 12))
+        container.addSubview(maxDescLabel)
+
+        let maxField = NSTextField(string: String(format: "%.0f", currentMaxTemp))
+        maxField.alignment = .right
+        maxField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        maxField.translatesAutoresizingMaskIntoConstraints = false
+        dialogMaxTempField = maxField
+        container.addSubview(maxField)
+
+        let maxUnit = makeLabel("\u{00B0}C", font: .systemFont(ofSize: 12))
+        container.addSubview(maxUnit)
+
+        // ── Layout (Auto Layout inside frame-based container) ──
+        NSLayoutConstraint.activate([
+            // Row 1: Constant RPM — radio + slider + value
+            rpmRadio.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            rpmRadio.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+
+            rpmSlider.centerYAnchor.constraint(equalTo: rpmRadio.centerYAnchor),
+            rpmSlider.leadingAnchor.constraint(equalTo: rpmRadio.trailingAnchor, constant: 8),
+            rpmSlider.trailingAnchor.constraint(equalTo: rpmValueLabel.leadingAnchor, constant: -8),
+
+            rpmValueLabel.centerYAnchor.constraint(equalTo: rpmRadio.centerYAnchor),
+            rpmValueLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            rpmValueLabel.widthAnchor.constraint(equalToConstant: 54),
+
+            // Row 2: Sensor-based — radio + popup
+            sensorRadio.topAnchor.constraint(equalTo: rpmRadio.bottomAnchor, constant: 14),
+            sensorRadio.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+
+            sensorPopup.centerYAnchor.constraint(equalTo: sensorRadio.centerYAnchor),
+            sensorPopup.leadingAnchor.constraint(equalTo: sensorRadio.trailingAnchor, constant: 8),
+            sensorPopup.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            // Row 3: Min temp description + field + unit
+            minDescLabel.topAnchor.constraint(equalTo: sensorRadio.bottomAnchor, constant: 12),
+            minDescLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+
+            minField.centerYAnchor.constraint(equalTo: minDescLabel.centerYAnchor),
+            minField.trailingAnchor.constraint(equalTo: minUnit.leadingAnchor, constant: -4),
+            minField.widthAnchor.constraint(equalToConstant: 46),
+
+            minUnit.centerYAnchor.constraint(equalTo: minDescLabel.centerYAnchor),
+            minUnit.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+
+            // Row 4: Max temp description + field + unit
+            maxDescLabel.topAnchor.constraint(equalTo: minDescLabel.bottomAnchor, constant: 10),
+            maxDescLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+
+            maxField.centerYAnchor.constraint(equalTo: maxDescLabel.centerYAnchor),
+            maxField.trailingAnchor.constraint(equalTo: maxUnit.leadingAnchor, constant: -4),
+            maxField.widthAnchor.constraint(equalToConstant: 46),
+
+            maxUnit.centerYAnchor.constraint(equalTo: maxDescLabel.centerYAnchor),
+            maxUnit.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+
+        // Set initial state
+        let isSensor = currentMode == .curve
+        rpmRadio.state = isSensor ? .off : .on
+        sensorRadio.state = isSensor ? .on : .off
+        setDialogControlsEnabled(sensorBased: isSensor)
+
+        alert.accessoryView = container
+
+        // ── Run dialog ──
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            if rpmRadio.state == .on {
+                let rpm = rpmSlider.doubleValue
+                delegate.preferencesDidChangeFanMode(fanIndex: fanIndex, mode: .fixed)
+                delegate.preferencesDidChangeFanRPM(fanIndex: fanIndex, rpm: rpm)
+            } else {
+                let sensorIdx = sensorPopup.indexOfSelectedItem
+                let sensorKey: String? = (sensorIdx >= 0 && sensorIdx < detectedSensors.count)
+                    ? detectedSensors[sensorIdx].key : nil
+                let minTemp = Double(minField.stringValue) ?? 40
+                let maxTemp = Double(maxField.stringValue) ?? 90
+
+                let curve = FanCurve(points: [
+                    FanCurvePoint(temperature: minTemp, rpm: minRPM),
+                    FanCurvePoint(temperature: maxTemp, rpm: maxRPM),
+                ])
+
+                delegate.preferencesDidChangeFanMode(fanIndex: fanIndex, mode: .curve)
+                delegate.preferencesDidChangeFanCurve(fanIndex: fanIndex, curve: curve)
+                delegate.preferencesDidChangeFanReferenceSensor(fanIndex: fanIndex, sensorKey: sensorKey)
+            }
+            fanSegments[fanIndex]?.selectedSegment = 1
+        } else {
+            let mode = delegate.fanMode(for: fanIndex)
+            fanSegments[fanIndex]?.selectedSegment = mode == .auto ? 0 : 1
+        }
+
+        dialogRPMRadio = nil
+        dialogSensorRadio = nil
+        dialogRPMSlider = nil
+        dialogRPMLabel = nil
+        dialogSensorPopup = nil
+        dialogMinTempField = nil
+        dialogMaxTempField = nil
+    }
+
+    private func setDialogControlsEnabled(sensorBased: Bool) {
+        dialogRPMSlider?.isEnabled = !sensorBased
+        dialogSensorPopup?.isEnabled = sensorBased
+        dialogMinTempField?.isEnabled = sensorBased
+        dialogMaxTempField?.isEnabled = sensorBased
+    }
+
+    @objc private func dialogModeToggled(_ sender: NSButton) {
+        let isSensor = sender.tag == 1
+        dialogRPMRadio?.state = isSensor ? .off : .on
+        dialogSensorRadio?.state = isSensor ? .on : .off
+        setDialogControlsEnabled(sensorBased: isSensor)
+    }
+
+    @objc private func dialogRPMChanged(_ sender: NSSlider) {
+        dialogRPMLabel?.stringValue = String(format: "%.0f", sender.doubleValue)
+    }
+
+    // MARK: - Preferences Dialog
+
+    @objc private func showPreferencesDialog() {
+        let alert = NSAlert()
+        alert.messageText = "Preferences"
+        alert.addButton(withTitle: "Done")
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let toggle = NSButton(checkboxWithTitle: "Start at Login (recommended)",
+                              target: nil, action: nil)
+        toggle.state = LaunchAgentManager.shared.isInstalled ? .on : .off
+        stack.addArrangedSubview(toggle)
+
+        let hint = makeLabel("MySMC will launch automatically as root when you log in,\n"
+                             + "keeping your fan settings active without any extra steps.",
+                             font: .systemFont(ofSize: 11),
+                             color: .secondaryLabelColor)
+        stack.addArrangedSubview(hint)
+
+        stack.setFrameSize(stack.fittingSize)
+        alert.accessoryView = stack
+
+        alert.runModal()
+
+        // Apply toggle state
+        if toggle.state == .on && !LaunchAgentManager.shared.isInstalled {
+            try? LaunchAgentManager.shared.install()
+        } else if toggle.state == .off && LaunchAgentManager.shared.isInstalled {
+            LaunchAgentManager.shared.uninstall()
         }
     }
 
     // MARK: - View Builders
 
-    private func makeTempRow(reading: TemperatureReading, isHottest: Bool) -> NSView {
+    private func makeFanView(fan: Fan) -> NSView {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = 6
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        let keyLabel = makeLabel(
-            reading.key,
-            font: .monospacedSystemFont(ofSize: 11, weight: .regular),
-            color: isHottest ? .systemOrange : .tertiaryLabelColor
-        )
-        keyLabel.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        tempKeyLabels[reading.key] = keyLabel
+        // Fan name (fixed width to align with header)
+        let nameLabel = makeLabel(fan.label, font: .systemFont(ofSize: 12, weight: .medium))
+        nameLabel.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        nameLabel.lineBreakMode = .byTruncatingTail
 
-        let nameLabel = makeLabel(reading.label, font: .systemFont(ofSize: 12))
+        // RPM range: min — current — max
+        let rangeLabel = NSTextField(labelWithString: "")
+        rangeLabel.translatesAutoresizingMaskIntoConstraints = false
+        rangeLabel.alignment = .center
+        rangeLabel.attributedStringValue = makeRPMRangeString(
+            min: fan.minimum, actual: fan.actual, max: fan.maximum)
+        fanRangeLabels[fan.index] = rangeLabel
+
+        // Auto/Custom segmented control
+        let mode = prefsDelegate?.fanMode(for: fan.index) ?? .auto
+        let segment = NSSegmentedControl(labels: ["Auto", "Custom\u{2026}"],
+                                          trackingMode: .selectOne,
+                                          target: self,
+                                          action: #selector(fanControlChanged(_:)))
+        segment.translatesAutoresizingMaskIntoConstraints = false
+        segment.tag = fan.index
+        segment.selectedSegment = mode == .auto ? 0 : 1
+        segment.setContentHuggingPriority(.required, for: .horizontal)
+        fanSegments[fan.index] = segment
+
+        row.addArrangedSubview(nameLabel)
+        row.addArrangedSubview(rangeLabel)
+        row.addArrangedSubview(segment)
+
+        return row
+    }
+
+    private func makeFanColumnHeader() -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let color = NSColor.secondaryLabelColor
+
+        let fanLabel = makeLabel("Fan", font: font, color: color)
+        fanLabel.widthAnchor.constraint(equalToConstant: 80).isActive = true
+
+        let rpmLabel = makeLabel("Min/Current/Max RPM", font: font, color: color)
+        rpmLabel.alignment = .center
+
+        let ctrlLabel = makeLabel("Control", font: font, color: color)
+        ctrlLabel.alignment = .right
+        ctrlLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        row.addArrangedSubview(fanLabel)
+        row.addArrangedSubview(rpmLabel)
+        row.addArrangedSubview(ctrlLabel)
+
+        return row
+    }
+
+    private func makeSensorRow(reading: TemperatureReading, isHottest: Bool) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        // Colored indicator dot (MFC-style)
+        let dot = makeLabel("\u{25CF}", font: .systemFont(ofSize: 8),
+                            color: tempColor(for: reading.celsius))
+        dot.widthAnchor.constraint(equalToConstant: 12).isActive = true
+        dot.alignment = .center
+
+        let nameLabel = makeLabel(reading.label, font: .systemFont(ofSize: 12),
+                                  color: isHottest ? .systemOrange : .labelColor)
+        tempNameLabels[reading.key] = nameLabel
 
         let valueLabel = makeLabel(
-            String(format: "%.0f\u{00B0}C", reading.celsius),
+            String(format: "%.0f", reading.celsius),
             font: .monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-            color: tempColor(for: reading.celsius)
-        )
+            color: tempColor(for: reading.celsius))
         valueLabel.alignment = .right
-        valueLabel.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        valueLabel.widthAnchor.constraint(equalToConstant: 36).isActive = true
         tempValueLabels[reading.key] = valueLabel
 
-        row.addArrangedSubview(keyLabel)
+        row.addArrangedSubview(dot)
         row.addArrangedSubview(nameLabel)
         row.addArrangedSubview(valueLabel)
         nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         return row
-    }
-
-    private func makeFanMonitorView(fan: Fan) -> NSView {
-        let container = NSStackView()
-        container.orientation = .vertical
-        container.alignment = .leading
-        container.spacing = 4
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        // Header: name + RPM
-        let headerRow = NSStackView()
-        headerRow.orientation = .horizontal
-        headerRow.alignment = .lastBaseline
-        headerRow.spacing = 8
-        headerRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let nameLabel = makeLabel(fan.label, font: .systemFont(ofSize: 13, weight: .semibold))
-        let rpmStr = fan.actual.map { String(format: "%.0f", $0) } ?? "--"
-        let rpmLabel = makeLabel(
-            "\(rpmStr) RPM",
-            font: .monospacedDigitSystemFont(ofSize: 13, weight: .medium),
-            color: .systemBlue
-        )
-        rpmLabel.alignment = .right
-        fanActualLabels[fan.index] = rpmLabel
-
-        headerRow.addArrangedSubview(nameLabel)
-        headerRow.addArrangedSubview(rpmLabel)
-        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        // Progress bar
-        let bar = NSProgressIndicator()
-        bar.style = .bar
-        bar.isIndeterminate = false
-        bar.minValue = fan.minimum ?? 0
-        bar.maxValue = fan.maximum ?? 6500
-        bar.doubleValue = fan.actual ?? 0
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        bar.controlSize = .small
-        fanBars[fan.index] = bar
-
-        // Detail line
-        let target = fan.target.map { String(format: "%.0f", $0) } ?? "--"
-        let minStr = fan.minimum.map { String(format: "%.0f", $0) } ?? "--"
-        let maxStr = fan.maximum.map { String(format: "%.0f", $0) } ?? "--"
-        let detailLabel = makeLabel(
-            "Target: \(target)  Min: \(minStr)  Max: \(maxStr)",
-            font: .monospacedDigitSystemFont(ofSize: 10, weight: .regular),
-            color: .secondaryLabelColor
-        )
-        fanDetailLabels[fan.index] = detailLabel
-
-        container.addArrangedSubview(headerRow)
-        container.addArrangedSubview(bar)
-        container.addArrangedSubview(detailLabel)
-
-        return container
-    }
-
-    private func makeSliderRow(
-        label: String, min: Double, max: Double, value: Double,
-        format: String, action: Selector, tag: Int
-    ) -> (NSStackView, NSSlider, NSTextField) {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = makeLabel(label, font: .systemFont(ofSize: 12))
-        titleLabel.widthAnchor.constraint(equalToConstant: 110).isActive = true
-
-        let slider = NSSlider(value: value, minValue: min, maxValue: max,
-                              target: self, action: action)
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        slider.controlSize = .regular
-        slider.tag = tag
-        slider.isContinuous = true
-        slider.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
-
-        let valueLabel = makeLabel(
-            String(format: format, value),
-            font: .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        )
-        valueLabel.widthAnchor.constraint(equalToConstant: 80).isActive = true
-        valueLabel.alignment = .right
-
-        row.addArrangedSubview(titleLabel)
-        row.addArrangedSubview(slider)
-        row.addArrangedSubview(valueLabel)
-
-        return (row, slider, valueLabel)
     }
 
     // MARK: - Helpers
@@ -984,6 +803,34 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
 
     private func makeSectionHeader(_ text: String) -> NSTextField {
         makeLabel(text, font: .systemFont(ofSize: 13, weight: .semibold))
+    }
+
+    private func makeColumnHeader(left: String, right: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let leftLabel = makeLabel(left, font: .systemFont(ofSize: 11, weight: .medium),
+                                  color: .secondaryLabelColor)
+        let rightLabel = makeLabel(right, font: .systemFont(ofSize: 11, weight: .medium),
+                                   color: .secondaryLabelColor)
+        rightLabel.alignment = .right
+
+        row.addArrangedSubview(leftLabel)
+        row.addArrangedSubview(rightLabel)
+        leftLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        return row
+    }
+
+    private func makeSmallButton(_ title: String, action: Selector) -> NSButton {
+        let btn = NSButton(title: title, target: self, action: action)
+        btn.bezelStyle = .rounded
+        btn.controlSize = .small
+        btn.font = .systemFont(ofSize: 11)
+        return btn
     }
 
     private func makeSpacer(_ height: CGFloat) -> NSView {
@@ -1007,27 +854,25 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         return .systemGreen
     }
 
-    private func curvePointsSummary(_ curve: FanCurve) -> String {
-        curve.points.map { String(format: "%.0f\u{00B0}C \u{2192} %.0f RPM", $0.temperature, $0.rpm) }
-            .joined(separator: "  \u{2022}  ")
-    }
-}
+    /// MFC-style "min — **current** — max" with bolded current value.
+    private func makeRPMRangeString(min: Double?, actual: Double?, max: Double?) -> NSAttributedString {
+        let minStr = min.map { String(format: "%.0f", $0) } ?? "--"
+        let actStr = actual.map { String(format: "%.0f", $0) } ?? "--"
+        let maxStr = max.map { String(format: "%.0f", $0) } ?? "--"
 
-// MARK: - FanCurveEditorDelegate
+        let normal: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let bold: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold),
+            .foregroundColor: NSColor.labelColor,
+        ]
 
-extension PreferencesWindowController: FanCurveEditorDelegate {
-    func fanCurveEditorDidChange(_ editor: FanCurveEditorView, curve: FanCurve) {
-        let fanIndex = editor.fanIndex
-
-        // Update the points summary label
-        fanPointsLabels[fanIndex]?.stringValue = curvePointsSummary(curve)
-
-        // Apply hysteresis/ramp/delay from sliders
-        var updatedCurve = curve
-        updatedCurve.hysteresis = hysteresisSlider?.doubleValue ?? curve.hysteresis
-        updatedCurve.rampRate = rampRateSlider?.doubleValue ?? curve.rampRate
-        updatedCurve.responseDelay = responseDelaySlider?.doubleValue ?? curve.responseDelay
-
-        prefsDelegate?.preferencesDidChangeFanCurve(fanIndex: fanIndex, curve: updatedCurve)
+        let result = NSMutableAttributedString()
+        result.append(NSAttributedString(string: "\(minStr) \u{2014} ", attributes: normal))
+        result.append(NSAttributedString(string: actStr, attributes: bold))
+        result.append(NSAttributedString(string: " \u{2014} \(maxStr)", attributes: normal))
+        return result
     }
 }
