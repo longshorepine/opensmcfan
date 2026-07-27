@@ -26,7 +26,6 @@ public final class ThermalEngine {
 
     // Callbacks (called on engine queue)
     public var onUpdate: ((_ temps: [TemperatureReading], _ fans: [Fan]) -> Void)?
-    public var onEmergency: ((_ temp: Double) -> Void)?
 
     public init(smc: SMCConnection) {
         self.smc = smc
@@ -93,22 +92,7 @@ public final class ThermalEngine {
         }
     }
 
-    /// The currently active profile (thread-safe read).
-    public var currentProfile: Profile? {
-        engineQueue.sync { activeProfile }
-    }
-
-    /// Lightweight profile update — changes the active profile config
-    /// without resetting engine state (ramp targets, spike timers).
-    /// Use this for slider drags and single-fan overrides.
-    public func updateActiveProfile(_ profile: Profile) {
-        engineQueue.async { [weak self] in
-            self?.activeProfile = profile
-        }
-    }
-
     /// Update a single fan's config within the active profile.
-    /// Lighter than updateActiveProfile for single-fan changes.
     public func updateFanConfig(fanIndex: Int, config: FanConfig) {
         engineQueue.async { [weak self] in
             guard let self = self else { return }
@@ -137,7 +121,6 @@ public final class ThermalEngine {
         // 2. Emergency check
         if hottestTemp >= emergencyThreshold {
             forceAllMax(profile: profile)
-            onEmergency?(hottestTemp)
             let fans = fanReader.readAllFans()
             onUpdate?(temps, fans)
             return

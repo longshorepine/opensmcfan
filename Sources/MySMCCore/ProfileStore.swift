@@ -33,11 +33,19 @@ public final class ProfileStore {
         chownToConsoleUser(directory.path)
     }
 
+    /// Sanitize a profile ID to prevent path traversal (we run as root).
+    private func sanitizedFilename(for id: String) -> String {
+        let safe = id.replacingOccurrences(of: "..", with: "")
+                     .replacingOccurrences(of: "/", with: "_")
+                     .replacingOccurrences(of: "\\", with: "_")
+        return safe.isEmpty ? "untitled" : safe
+    }
+
     /// Save a profile to disk, owned by the console user so the user
     /// can manage files even though the app runs as root.
     public func save(_ profile: Profile) throws {
         try ensureDirectory()
-        let url = directory.appendingPathComponent("\(profile.id).json")
+        let url = directory.appendingPathComponent("\(sanitizedFilename(for: profile.id)).json")
         var p = profile
         p.modified = Date()
         let data = try encoder.encode(p)
@@ -57,7 +65,7 @@ public final class ProfileStore {
 
     /// Load a profile by ID.
     public func load(id: String) throws -> Profile {
-        let url = directory.appendingPathComponent("\(id).json")
+        let url = directory.appendingPathComponent("\(sanitizedFilename(for: id)).json")
         let data = try Data(contentsOf: url)
         return try decoder.decode(Profile.self, from: data)
     }
@@ -85,7 +93,7 @@ public final class ProfileStore {
         if let profile = try? load(id: id), profile.builtIn {
             return false
         }
-        let url = directory.appendingPathComponent("\(id).json")
+        let url = directory.appendingPathComponent("\(sanitizedFilename(for: id)).json")
         try? FileManager.default.removeItem(at: url)
         return true
     }
@@ -116,25 +124,4 @@ public final class ProfileStore {
         }
     }
 
-    /// Export a profile to a .smcprofile file.
-    public func exportProfile(_ profile: Profile, to url: URL) throws {
-        let data = try encoder.encode(profile)
-        try data.write(to: url, options: .atomic)
-    }
-
-    /// Import a profile from a .smcprofile file.
-    public func importProfile(from url: URL) throws -> Profile {
-        let data = try Data(contentsOf: url)
-        var profile = try decoder.decode(Profile.self, from: data)
-        profile.builtIn = false  // imported profiles are never built-in
-
-        // Avoid ID collision
-        let existing = Set(loadAll().map(\.id))
-        if existing.contains(profile.id) {
-            profile.id = profile.id + "_imported_\(Int(Date().timeIntervalSince1970))"
-        }
-
-        try save(profile)
-        return profile
-    }
 }

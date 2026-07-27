@@ -6,23 +6,24 @@ import Foundation
 public final class FanController {
     private let smc: SMCConnection
     private let reader: FanReader
-    // Factory-minimum RPMs cached at startup — restored when returning to auto mode.
-    // We cache these because setFixed writes to F{i}Mn, making future reads reflect
+    // Hardware limits cached at startup — min is restored when returning to auto mode.
+    // We cache min because setFixed writes to F{i}Mn, making future reads reflect
     // the forced value rather than the hardware floor.
+    // We cache max to avoid redundant SMC reads on every tick (max never changes).
     private var originalMins: [Int: Double] = [:]
+    private var originalMaxs: [Int: Double] = [:]
 
     public init(smc: SMCConnection) {
         self.smc = smc
         self.reader = FanReader(smc: smc)
     }
 
-    /// Cache each fan's factory-minimum RPM. Call once before any control operations.
+    /// Cache each fan's factory min/max RPM. Call once before any control operations.
     public func loadHardwareLimits(fanCount: Int) {
         for i in 0..<fanCount {
             let fan = reader.readFan(index: i)
-            if let min = fan.minimum {
-                originalMins[i] = min
-            }
+            if let min = fan.minimum { originalMins[i] = min }
+            if let max = fan.maximum { originalMaxs[i] = max }
         }
     }
 
@@ -47,8 +48,7 @@ public final class FanController {
     /// Uses both the minimum-RPM method (most compatible across Mac models) and
     /// forced-mode+target for belt-and-suspenders coverage.
     public func setFixed(fan index: Int, rpm: Double) throws {
-        let fan = reader.readFan(index: index)
-        let clamped = clamp(rpm, for: fan, index: index)
+        let clamped = clampToLimits(rpm, fan: index)
         try reader.setMinimum(fan: index, rpm: clamped)   // primary: works on all Intel Macs
         try? reader.setMode(fan: index, forced: true)      // secondary: direct override
         try? reader.setTarget(fan: index, rpm: clamped)    // secondary: target
@@ -64,8 +64,7 @@ public final class FanController {
         rampRate: Double,
         deltaTime: TimeInterval
     ) throws -> Double {
-        let fan = reader.readFan(index: index)
-        var target = clamp(targetRPM, for: fan, index: index)
+        var target = clampToLimits(targetRPM, fan: index)
 
         if let last = lastRPM {
             let maxDelta = rampRate * deltaTime
@@ -81,11 +80,12 @@ public final class FanController {
         return target
     }
 
-    // Clamp to hardware limits, using cached original min as the lower bound.
-    // fan.minimum may reflect our own prior setFixed write, not the factory floor.
-    private func clamp(_ rpm: Double, for fan: Fan, index: Int) -> Double {
-        let lo = originalMins[index] ?? fan.minimum ?? 0
-        let hi = fan.maximum ?? 6500
+    // Clamp to cached hardware limits. Uses startup-cached values so we don't
+    // re-read from SMC on every tick, and so min reflects the factory floor
+    // (not our own prior setMinimum write).
+    private func clampToLimits(_ rpm: Double, fan index: Int) -> Double {
+        let lo = originalMins[index] ?? 0
+        let hi = originalMaxs[index] ?? 6500
         return min(max(rpm, lo), hi)
     }
 }

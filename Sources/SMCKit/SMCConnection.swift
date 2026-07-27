@@ -109,7 +109,7 @@ public final class SMCConnection {
                 &outputSize
             )
             guard result == kIOReturnSuccess else {
-                throw SMCError.readFailed("raw", result)
+                throw SMCError.readFailed("iokit", result)
             }
             return output
         }
@@ -210,12 +210,5 @@ public final class SMCConnection {
         guard output.result == 0 else {
             throw SMCError.writeFailed(key, Int32(output.result))
         }
-    }
-
-    /// Get the total number of SMC keys available.
-    public func keyCount() throws -> Int {
-        let val = try read(key: "#KEY")
-        if case .uint(let n) = val { return Int(n) }
-        return 0
     }
 }

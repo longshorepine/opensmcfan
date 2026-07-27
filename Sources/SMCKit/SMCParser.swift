@@ -52,7 +52,7 @@ public enum SMCParser {
 
         case "fpe2":
             // Unsigned 14.2 fixed point (fan RPM)
-            let raw = (Int16(bytes[0]) << 8) | Int16(bytes[1])
+            let raw = (UInt16(bytes[0]) << 8) | UInt16(bytes[1])
             return .double(Double(raw) / 4.0)
 
         case "flt ","flt":
@@ -99,48 +99,9 @@ public enum SMCParser {
 
     // MARK: - Encoding
 
-    /// Encode a Double into raw bytes for the given SMC type.
-    public static func encode(value: Double, type: String) -> [UInt8]? {
-        switch type {
-        case "sp78":
-            let raw = Int16(round(value * 256.0))
-            return [UInt8(truncatingIfNeeded: raw >> 8),
-                    UInt8(truncatingIfNeeded: raw)]
-
-        case "fpe2":
-            let raw = Int16(round(value * 4.0))
-            return [UInt8(truncatingIfNeeded: raw >> 8),
-                    UInt8(truncatingIfNeeded: raw)]
-
-        case "flt ", "flt":
-            let bits = Float(value).bitPattern
-            return [UInt8(bits >> 24 & 0xFF), UInt8(bits >> 16 & 0xFF),
-                    UInt8(bits >> 8 & 0xFF),  UInt8(bits & 0xFF)]
-
-        case "ui8 ", "ui8":
-            return [UInt8(clamping: Int(value))]
-
-        case "ui16":
-            let v = UInt16(clamping: Int(value))
-            return [UInt8(v >> 8), UInt8(v & 0xFF)]
-
-        case "ui32":
-            let v = UInt32(clamping: Int(value))
-            return [UInt8(v >> 24 & 0xFF), UInt8(v >> 16 & 0xFF),
-                    UInt8(v >> 8 & 0xFF),  UInt8(v & 0xFF)]
-
-        case "flag":
-            return [value != 0 ? 1 : 0]
-
-        default:
-            return nil
-        }
-    }
-
     /// Encode an RPM value as fpe2 bytes.
     public static func encodeFPE2(_ rpm: Double) -> [UInt8] {
-        let raw = Int16(round(rpm * 4.0))
-        return [UInt8(truncatingIfNeeded: raw >> 8),
-                UInt8(truncatingIfNeeded: raw)]
+        let raw = UInt16(clamping: Int(round(rpm * 4.0)))
+        return [UInt8(raw >> 8), UInt8(raw & 0xFF)]
     }
 }

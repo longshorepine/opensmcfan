@@ -67,12 +67,6 @@ public let knownSensors: [SensorInfo] = [
 public final class TemperatureMonitor {
     private let smc: SMCConnection
 
-    /// Recent history per sensor (key → last N readings).
-    public private(set) var history: [String: [Double]] = [:]
-
-    /// Maximum history entries per sensor.
-    public var historySize: Int = 60
-
     public init(smc: SMCConnection) {
         self.smc = smc
     }
@@ -89,11 +83,6 @@ public final class TemperatureMonitor {
                     label: sensor.label,
                     celsius: celsius
                 ))
-                // Update history
-                var h = history[sensor.key] ?? []
-                h.append(celsius)
-                if h.count > historySize { h.removeFirst() }
-                history[sensor.key] = h
             }
         }
         return readings
