@@ -36,7 +36,7 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
 
     // Monitor tab
     private let monitorStack = NSStackView()
-    private let monitorScroll = NSScrollView()
+    private let monitorScroll = NSScrollView()   // kept for compatibility, not used in layout
     private var tempValueLabels: [String: NSTextField] = [:]
     private var tempKeyLabels: [String: NSTextField] = [:]
     private var hottestKey: String = ""
@@ -226,30 +226,18 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
 
-        monitorScroll.translatesAutoresizingMaskIntoConstraints = false
-        monitorScroll.hasVerticalScroller = true
-        monitorScroll.hasHorizontalScroller = false
-        monitorScroll.drawsBackground = false
-        monitorScroll.borderType = .noBorder
-
         monitorStack.orientation = .vertical
         monitorStack.alignment = .leading
         monitorStack.spacing = 4
         monitorStack.translatesAutoresizingMaskIntoConstraints = false
-        monitorStack.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
-
-        monitorScroll.documentView = monitorStack
-        container.addSubview(monitorScroll)
+        container.addSubview(monitorStack)
 
         NSLayoutConstraint.activate([
-            monitorScroll.topAnchor.constraint(equalTo: container.topAnchor),
-            monitorScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            monitorScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            monitorScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            monitorStack.widthAnchor.constraint(equalTo: monitorScroll.contentView.widthAnchor),
+            monitorStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            monitorStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            monitorStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
         ])
 
-        // Placeholder until first update
         let placeholder = makeLabel("Waiting for sensor data\u{2026}",
                                     font: .systemFont(ofSize: 12),
                                     color: .secondaryLabelColor)
@@ -264,30 +252,16 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
 
-        profilesScroll.translatesAutoresizingMaskIntoConstraints = false
-        profilesScroll.hasVerticalScroller = true
-        profilesScroll.hasHorizontalScroller = false
-        profilesScroll.drawsBackground = false
-        profilesScroll.borderType = .noBorder
-
         profilesStack.orientation = .vertical
         profilesStack.alignment = .leading
         profilesStack.spacing = 8
         profilesStack.translatesAutoresizingMaskIntoConstraints = false
-        profilesStack.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
+        container.addSubview(profilesStack)
 
-        profilesScroll.documentView = profilesStack
-        container.addSubview(profilesScroll)
-
-        // Constrain stack width to the clip view (contentView), not the scroll
-        // view itself — using scrollView.widthAnchor produces a 0-width stack
-        // on the first layout pass because the documentView sits inside NSClipView.
         NSLayoutConstraint.activate([
-            profilesScroll.topAnchor.constraint(equalTo: container.topAnchor),
-            profilesScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            profilesScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            profilesScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            profilesStack.widthAnchor.constraint(equalTo: profilesScroll.contentView.widthAnchor),
+            profilesStack.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            profilesStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            profilesStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
         ])
 
         // Profile selector row
