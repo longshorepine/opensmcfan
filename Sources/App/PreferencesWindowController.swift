@@ -151,11 +151,9 @@ final class PreferencesWindowController: NSWindowController {
         monitorTab.view = buildMonitorTab()
         tabView.addTabViewItem(monitorTab)
 
-        // Profiles tab
-        let profilesTab = NSTabViewItem(identifier: "profiles")
-        profilesTab.label = "Profiles"
-        profilesTab.view = buildProfilesTab()
-        tabView.addTabViewItem(profilesTab)
+        // Profiles tab — frozen for v1.1 (editor is incomplete; profile
+        // switching still works from the menu bar)
+        // tabView.addTabViewItem({ ... }())
     }
 
     // MARK: - General Tab
