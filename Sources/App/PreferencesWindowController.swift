@@ -246,7 +246,7 @@ final class PreferencesWindowController: NSWindowController, NSTabViewDelegate {
             monitorScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             monitorScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             monitorScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            monitorStack.widthAnchor.constraint(equalTo: monitorScroll.widthAnchor),
+            monitorStack.widthAnchor.constraint(equalTo: monitorScroll.contentView.widthAnchor),
         ])
 
         // Placeholder until first update
