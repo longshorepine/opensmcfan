@@ -26,5 +26,7 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>MySMC - Open Source SMC Fan Control</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
 </dict>
 </plist>

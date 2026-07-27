@@ -47,7 +47,7 @@ $(CLI_BIN): $(COMMON_SRCS) $(CLI_SRCS) $(CSMC_HEADER)
 # (privilege elevation at first launch).
 app: $(APP_BIN)
 
-$(APP_BIN): $(COMMON_SRCS) $(APP_SRCS) $(CSMC_HEADER) Resources/Info.plist
+$(APP_BIN): $(COMMON_SRCS) $(APP_SRCS) $(CSMC_HEADER) Resources/Info.plist Resources/AppIcon.icns
 	@mkdir -p $(APP_DIR)/MacOS $(APP_DIR)/Resources
 	$(SWIFTC) $(SWIFT_FLAGS) -framework AppKit -framework Security \
 		-import-objc-header $(CSMC_HEADER) \
@@ -55,6 +55,7 @@ $(APP_BIN): $(COMMON_SRCS) $(APP_SRCS) $(CSMC_HEADER) Resources/Info.plist
 		$(COMMON_SRCS) $(APP_SRCS) \
 		-o $(APP_BIN)
 	@cp Resources/Info.plist $(APP_DIR)/
+	@cp Resources/AppIcon.icns $(APP_DIR)/Resources/
 	@echo "Built: $(BUILD_DIR)/MySMC.app"
 
 # ── Run ──────────────────────────────────────────────────────────────────────
