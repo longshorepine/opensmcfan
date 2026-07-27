@@ -139,6 +139,12 @@ final class PreferencesWindowController: NSWindowController {
             tabView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
         ])
 
+        // General tab
+        let generalTab = NSTabViewItem(identifier: "general")
+        generalTab.label = "General"
+        generalTab.view = buildGeneralTab()
+        tabView.addTabViewItem(generalTab)
+
         // Monitor tab
         let monitorTab = NSTabViewItem(identifier: "monitor")
         monitorTab.label = "Monitor"
@@ -150,6 +156,56 @@ final class PreferencesWindowController: NSWindowController {
         profilesTab.label = "Profiles"
         profilesTab.view = buildProfilesTab()
         tabView.addTabViewItem(profilesTab)
+    }
+
+    // MARK: - General Tab
+
+    private func buildGeneralTab() -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 16
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+        ])
+
+        // Start at Login toggle
+        let toggle = NSButton(checkboxWithTitle: "Start at Login", target: self,
+                              action: #selector(autoLoginToggled(_:)))
+        toggle.state = LaunchAgentManager.shared.isInstalled ? .on : .off
+        stack.addArrangedSubview(toggle)
+
+        let hint = NSTextField(labelWithString: "MySMC will launch automatically as root when you log in,\nkeeping your fan settings active without any extra steps.")
+        hint.font = NSFont.systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        hint.isSelectable = false
+        stack.addArrangedSubview(hint)
+
+        return container
+    }
+
+    @objc private func autoLoginToggled(_ sender: NSButton) {
+        if sender.state == .on {
+            do {
+                try LaunchAgentManager.shared.install()
+            } catch {
+                sender.state = .off
+                let alert = NSAlert()
+                alert.messageText = "Could not enable auto-start"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        } else {
+            LaunchAgentManager.shared.uninstall()
+        }
     }
 
     // MARK: - Monitor Tab

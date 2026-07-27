@@ -77,6 +77,34 @@ final class StatusBarController: NSObject, PreferencesDelegate {
             self?.handleEngineUpdate(temps: temps, fans: fans)
         }
         engine.start(profile: workingProfile)
+
+        // One-time prompt to enable auto-start on login
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.promptAutoLoginIfNeeded()
+        }
+    }
+
+    private func promptAutoLoginIfNeeded() {
+        let key = "MySMC.didAskAutoLogin"
+        guard !UserDefaults.standard.bool(forKey: key),
+              !LaunchAgentManager.shared.isInstalled else { return }
+        UserDefaults.standard.set(true, forKey: key)
+
+        let alert = NSAlert()
+        alert.messageText = "Start MySMC Automatically?"
+        alert.informativeText = """
+            MySMC can launch automatically when you log in or wake from sleep, \
+            so your fan settings are always active without any extra steps.
+
+            You can change this later in Preferences → General.
+            """
+        alert.addButton(withTitle: "Enable Auto-Start")
+        alert.addButton(withTitle: "Not Now")
+        alert.alertStyle = .informational
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            try? LaunchAgentManager.shared.install()
+        }
     }
 
     func shutdown() {
