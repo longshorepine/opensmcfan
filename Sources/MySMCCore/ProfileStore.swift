@@ -77,10 +77,13 @@ public final class ProfileStore {
         return true
     }
 
-    /// Create default built-in profiles if none exist.
+    /// Create (or regenerate) default built-in profiles.
+    /// Regenerates any built-in profile whose stored fan count doesn't match
+    /// the current hardware — handles stale profiles written before root access
+    /// was available, or after hardware changes.
     public func createDefaultsIfNeeded(fans: [Fan]) {
         let existing = loadAll()
-        let existingIDs = Set(existing.map(\.id))
+        let existingByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
 
         let defaults: [Profile] = [
             .autoProfile(fans: fans),
@@ -90,8 +93,13 @@ public final class ProfileStore {
             .maxProfile(fans: fans),
         ]
 
-        for profile in defaults where !existingIDs.contains(profile.id) {
-            try? save(profile)
+        for profile in defaults {
+            let stored = existingByID[profile.id]
+            let missing = stored == nil
+            let stale = stored.map { $0.fans.count != fans.count } ?? false
+            if missing || stale {
+                try? save(profile)
+            }
         }
     }
 
